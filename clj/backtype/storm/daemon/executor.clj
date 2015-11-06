@@ -397,25 +397,29 @@
         (log-message "Shut down executor " component-id ":" (pr-str executor-id)))
         )))
 
-(defn- fail-spout-msg [executor-data task-data msg-id tuple-info time-delta reason id]
+(defn- fail-spout-msg [executor-data task-data msg-id tuple-info time-delta reason id start-time-ms]
   (let [^ISpout spout (:object task-data)
         storm-conf (:storm-conf executor-data)
         task-id (:task-id task-data)]
     ;;TODO: need to throttle these when there's lots of failures
-    (when (= true (storm-conf TOPOLOGY-DEBUG))
-      (log-message "SPOUT Failing " id ": " tuple-info " REASON: " reason " MSG-ID: " msg-id))
+    (when true
+    ;;(when (= true (storm-conf TOPOLOGY-DEBUG))
+      ;;(log-message "SPOUT Failing " id ": " tuple-info " REASON: " reason " MSG-ID: " msg-id))
+      (log-message "Failing " msg-id " " time-delta " " start-time-ms))
     (.fail spout msg-id)
     (task/apply-hooks (:user-context task-data) .spoutFail (SpoutFailInfo. msg-id task-id time-delta))
     (when time-delta
       (builtin-metrics/spout-failed-tuple! (:builtin-metrics task-data) (:stats executor-data) (:stream tuple-info))      
       (stats/spout-failed-tuple! (:stats executor-data) (:stream tuple-info) time-delta))))
 
-(defn- ack-spout-msg [executor-data task-data msg-id tuple-info time-delta id]
+(defn- ack-spout-msg [executor-data task-data msg-id tuple-info time-delta id start-time-ms]
   (let [storm-conf (:storm-conf executor-data)
         ^ISpout spout (:object task-data)
         task-id (:task-id task-data)]
-    (when (= true (storm-conf TOPOLOGY-DEBUG))
-      (log-message "SPOUT Acking message " id " " msg-id))
+    (when true
+    ;;(when (= true (storm-conf TOPOLOGY-DEBUG))
+      ;;(log-message "SPOUT Acking message " id " " msg-id))
+      (log-message "Acking " msg-id " " time-delta " " start-time-ms))
     (.ack spout msg-id)
     (task/apply-hooks (:user-context task-data) .spoutAck (SpoutAckInfo. msg-id task-id time-delta))
     (when time-delta
@@ -473,7 +477,7 @@
                  (reify RotatingMap$ExpiredCallback
                    (expire [this id [task-id spout-id tuple-info start-time-ms]]
                      (let [time-delta (if start-time-ms (time-delta-ms start-time-ms))]
-                       (fail-spout-msg executor-data (get task-datas task-id) spout-id tuple-info time-delta "TIMEOUT" id)
+                       (fail-spout-msg executor-data (get task-datas task-id) spout-id tuple-info time-delta "TIMEOUT" id start-time-ms)
                        ))))
         tuple-action-fn (fn [task-id ^TupleImpl tuple]
                           (let [stream-id (.getSourceStreamId tuple)]
@@ -493,9 +497,9 @@
                                   (let [time-delta (if start-time-ms (time-delta-ms start-time-ms))]
                                     (condp = stream-id
                                       ACKER-ACK-STREAM-ID (ack-spout-msg executor-data (get task-datas task-id)
-                                                                         spout-id tuple-finished-info time-delta id)
+                                                                         spout-id tuple-finished-info time-delta id start-time-ms)
                                       ACKER-FAIL-STREAM-ID (fail-spout-msg executor-data (get task-datas task-id)
-                                                                           spout-id tuple-finished-info time-delta "FAIL-STREAM" id)
+                                                                           spout-id tuple-finished-info time-delta "FAIL-STREAM" id start-time-ms)
                                       )))
                                 ;; TODO: on failure, emit tuple to failure stream
                                 ))))
@@ -550,7 +554,7 @@
                                            (when message-id
                                              (ack-spout-msg executor-data task-data message-id
                                                             {:stream out-stream-id :values values}
-                                                            (if (sampler) 0) "0:")))
+                                                            (if (sampler) 0) "0:" -1)))
                                          (or out-tasks [])
                                          ))]]
           (builtin-metrics/register-all (:builtin-metrics task-data) storm-conf (:user-context task-data))
