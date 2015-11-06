@@ -402,8 +402,10 @@
         storm-conf (:storm-conf executor-data)
         task-id (:task-id task-data)]
     ;;TODO: need to throttle these when there's lots of failures
-    (when (= true (storm-conf TOPOLOGY-DEBUG))
-      (log-message "SPOUT Failing " id ": " tuple-info " REASON: " reason " MSG-ID: " msg-id))
+    (when true
+    ;;(when (= true (storm-conf TOPOLOGY-DEBUG))
+      ;;(log-message "SPOUT Failing " id ": " tuple-info " REASON: " reason " MSG-ID: " msg-id))
+      (log-message "Failing " msg-id " " time-delta))
     (.fail spout msg-id)
     (task/apply-hooks (:user-context task-data) .spoutFail (SpoutFailInfo. msg-id task-id time-delta))
     (when time-delta
@@ -414,8 +416,10 @@
   (let [storm-conf (:storm-conf executor-data)
         ^ISpout spout (:object task-data)
         task-id (:task-id task-data)]
-    (when (= true (storm-conf TOPOLOGY-DEBUG))
-      (log-message "SPOUT Acking message " id " " msg-id))
+    (when true
+    ;;(when (= true (storm-conf TOPOLOGY-DEBUG))
+      ;;(log-message "SPOUT Acking message " id " " msg-id))
+      (log-message "Acking " msg-id " " time-delta))
     (.ack spout msg-id)
     (task/apply-hooks (:user-context task-data) .spoutAck (SpoutAckInfo. msg-id task-id time-delta))
     (when time-delta
@@ -539,6 +543,7 @@
                                          (if (and rooted?
                                                   (not (.isEmpty out-ids)))
                                            (do
+                                             (log-message "EmitTime: " message-id " " (System/currentTimeMillis))
                                              (.put pending root-id [task-id
                                                                     message-id
                                                                     {:stream out-stream-id :values values}
