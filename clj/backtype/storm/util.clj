@@ -784,21 +784,21 @@
   (let [r (java.util.Random.)]
     (fn [] (= 0 (.nextInt r freq)))))
 
-;;(defn even-sampler
-;;  [freq]
-;;  (let [freq (int freq)
-;;        start (int 0)
-;;        r (java.util.Random.)
-;;        curr (MutableInt. -1)
-;;        target (MutableInt. (.nextInt r freq))]
-;;    (with-meta
-;;      (fn []
-;;        (let [i (.increment curr)]
-;;          (when (>= i freq)
-;;            (.set curr start)
-;;            (.set target (.nextInt r freq))))
-;;        (= (.get curr) (.get target)))
-;;      {:rate freq})))
+(defn even-sampler-real
+  [freq]
+  (let [freq (int freq)
+        start (int 0)
+        r (java.util.Random.)
+        curr (MutableInt. -1)
+        target (MutableInt. (.nextInt r freq))]
+    (with-meta
+      (fn []
+        (let [i (.increment curr)]
+          (when (>= i freq)
+            (.set curr start)
+            (.set target (.nextInt r freq))))
+        (= (.get curr) (.get target)))
+      {:rate freq})))
 
 (defn even-sampler
   [freq]  

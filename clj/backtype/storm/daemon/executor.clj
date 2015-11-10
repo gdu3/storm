@@ -261,6 +261,7 @@
                                ((:suicide-fn <>))))
      :deserializer (KryoTupleDeserializer. storm-conf worker-context)
      :sampler (mk-stats-sampler storm-conf)
+     :replication-sampler (mk-replication-sampler storm-conf) ;;this is only used in spout auto replication some ratio of tuple
      ;; TODO: add in the executor-specific stuff in a :specific... or make a spout-data, bolt-data function?
      )))
 
@@ -455,7 +456,7 @@
     ))
 
 (defmethod mk-threads :spout [executor-data task-datas initial-credentials]
-  (let [{:keys [storm-conf component-id worker-context transfer-fn report-error sampler open-or-prepare-was-called?]} executor-data
+  (let [{:keys [storm-conf component-id worker-context transfer-fn report-error sampler replication-sampler open-or-prepare-was-called?]} executor-data
         ^ISpoutWaitStrategy spout-wait-strategy (init-spout-wait-strategy storm-conf)
         max-spout-pending (executor-max-spout-pending storm-conf (count task-datas))
         ^Integer max-spout-pending (if max-spout-pending (int max-spout-pending))        
@@ -569,11 +570,15 @@
                  (SpoutOutputCollector.
                   (reify ISpoutOutputCollector
                     (^List emit [this ^String stream-id ^List tuple ^Object message-id]
-                      (send-spout-msg stream-id tuple message-id nil)
+                        (if (replication-sampler)
+                          (send-spout-msg stream-id tuple message-id nil))
+                        (send-spout-msg stream-id tuple message-id nil)
                       )
                     (^void emitDirect [this ^int out-task-id ^String stream-id
                                        ^List tuple ^Object message-id]
-                      (send-spout-msg stream-id tuple message-id out-task-id)
+                        (if (replication-sampler)
+                          (send-spout-msg stream-id tuple message-id out-task-id))
+                        (send-spout-msg stream-id tuple message-id out-task-id)
                       )
                     (reportError [this error]
                       (report-error error)

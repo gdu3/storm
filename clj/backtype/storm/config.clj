@@ -88,9 +88,19 @@
        (/ 1)
        int))
 
+(defn replication-rate
+  [conf]
+  (->> (conf TOPOLOGY-REPLICATION-RATIO)
+       (/ 1)
+       int))
+
 (defn mk-stats-sampler
   [conf]
   (even-sampler (sampling-rate conf)))
+
+(defn mk-replication-sampler
+  [conf]
+  (even-sampler-real (replication-rate conf)))
 
 ; storm.zookeeper.servers:
 ;     - "server1"
