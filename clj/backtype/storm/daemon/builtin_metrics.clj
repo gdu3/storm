@@ -14,7 +14,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (ns backtype.storm.daemon.builtin-metrics
-  (:import [backtype.storm.metric.api MultiCountMetric MultiReducedMetric MeanReducer StateMetric IMetric IStatefulObject])
+  (:import [backtype.storm.metric.api MultiCountMetric MultiReducedMetric MeanReducer StateMetric IMetric IStatefulObject TimeoutAdjustmentMetric])
   (:import [backtype.storm Config])
   (:use [backtype.storm.stats :only [stats-rate]]))
 
@@ -45,6 +45,13 @@
                                (MultiReducedMetric. (MeanReducer.))
                                (MultiCountMetric.)
                                (MultiCountMetric.))))
+
+
+(defn make-timeout-adjustment-metric [executor-type storm-conf]
+  (condp = executor-type
+    :spout (TimeoutAdjustmentMetric. (storm-conf Config/TOPOLOGY_MESSAGE_TIMEOUT_SECS))
+    :bolt nil
+    ))
 
 (defn register-all [builtin-metrics  storm-conf topology-context]
   (doseq [[kw imetric] builtin-metrics]

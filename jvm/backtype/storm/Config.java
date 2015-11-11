@@ -1461,18 +1461,18 @@ public class Config extends HashMap<String, Object> {
     public static final String TOPOLOGY_DISRUPTOR_WAIT_TIMEOUT_MILLIS="topology.disruptor.wait.timeout.millis";
     public static final Object TOPOLOGY_DISRUPTOR_WAIT_TIMEOUT_MILLIS_SCHEMA = ConfigValidation.PositiveIntegerValidator;
 
-    /* Fraction of tuples to replicate (send twice) */
-    public static final String TOPOLOGY_REPLICATION_RATIO="topology.replication.ratio";
-    public static final Object TOPOLOGY_REPLICATION_RATIO_SCHEMA =ConfigValidation.PositiveNumberValidator;
+    // whether to enable adaptive timeout adjustment
+    public static final String TOPOLOGY_ENABLE_TIMEOUT_ADJUSTMENT="topology.enable.timeout.adjustment";
+    public static final Object TOPOLOGY_ENABLE_TIMEOUT_ADJUSTMENT_SCHEMA = Boolean.class;
 
-    public static void setReplicationRatio(Map conf, double ratio) {
-        conf.put(Config.TOPOLOGY_REPLICATION_RATIO, ratio);
+    public static void setEnableTimeoutAdjustment(Map conf, boolean isOn) {
+        conf.put(Config.TOPOLOGY_ENABLE_TIMEOUT_ADJUSTMENT, isOn);
     }
 
-    public void setReplicationRatio(double ratio) {
-        setReplicationRatio(this, ratio);
+    public void setEnableTimeoutAdjustment(boolean isOn) {
+        setEnableTimeoutAdjustment(this, isOn);
     }
-
+ 
     public static void setClasspath(Map conf, String cp) {
         conf.put(Config.TOPOLOGY_CLASSPATH, cp);
     }
