@@ -62,6 +62,10 @@ public class DisruptorQueue implements IStatefulObject {
     private String _queueName = "";
 
     private long _waitTimeout;
+
+    // for estimating the averaged queue length
+    long q_len_sum = 0;
+    long q_len_count = 0;
     
     public DisruptorQueue(String queueName, ClaimStrategy claim, WaitStrategy wait, long timeout) {
          this._queueName = PREFIX + queueName;
@@ -114,6 +118,8 @@ public class DisruptorQueue implements IStatefulObject {
     
     
     private void consumeBatchToCursor(long cursor, EventHandler<Object> handler) {
+        q_len_count++;
+        q_len_sum += cursor - _consumer.get();
         for(long curr = _consumer.get() + 1; curr <= cursor; curr++) {
             try {
                 MutableObject mo = _buffer.get(curr);
@@ -209,10 +215,12 @@ public class DisruptorQueue implements IStatefulObject {
         long rp = readPos();
         long wp = writePos();
         state.put("capacity",   capacity());
-        state.put("population", wp - rp);
+        state.put("population", q_len_count==0? 0 : q_len_sum/q_len_count);
         state.put("write_pos",  wp);
         state.put("read_pos",   rp);
-        return state;
+        q_len_count = 0;
+        q_len_sum = 0;
+        return state; 
     }
 
     public static class ObjectEventFactory implements EventFactory<MutableObject> {
