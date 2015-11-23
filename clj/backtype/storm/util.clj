@@ -1077,3 +1077,8 @@
     (assoc coll k (apply str (repeat (count (coll k)) "#")))
     coll))
 
+(defn average [coll]
+  (if (= 0 (count coll))
+    (double 0)
+    (/ (reduce + coll) (count coll))))
+

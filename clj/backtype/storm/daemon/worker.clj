@@ -34,6 +34,7 @@
   (:import [backtype.storm.security.auth AuthUtils])
   (:import [javax.security.auth Subject])
   (:import [java.security PrivilegedExceptionAction])
+  (:require [backtype.storm.daemon.builtin-metrics :as builtin-metrics])
   (:gen-class))
 
 (defmulti mk-suicide-fn cluster-mode)
@@ -105,7 +106,7 @@
         (fast-map-iter [[short-executor pairs] grouped]
           (let [q (short-executor-receive-queue-map short-executor)]
             (if q
-              (disruptor/publish q pairs)
+              (disruptor/publish q [pairs (System/currentTimeMillis)])
               (log-warn "Received invalid messages for unknown tasks. Dropping... ")
               )))))))
 
@@ -138,7 +139,7 @@
                         (log-warn "Can't transfer tuple - task value is nil. tuple type: " (pr-str (type tuple)) " and information: " (pr-str tuple)))
                      ))))
                 (local-transfer local)
-                (disruptor/publish transfer-queue remoteMap)
+                (disruptor/publish transfer-queue [remoteMap (System/currentTimeMillis)])
               ))]
     (if try-serialize-local
       (do 
@@ -255,6 +256,7 @@
       :receiver-thread-count (get storm-conf WORKER-RECEIVER-THREAD-COUNT)
       :transfer-fn (mk-transfer-fn <>)
       :assignment-versions assignment-versions
+      :transfer-q-wait-time (builtin-metrics/make-send-q-wait-time 1024)
       )))
 
 (defn- endpoint->string [[node port]]
@@ -337,11 +339,12 @@
         node+port->socket (:cached-node+port->socket worker)
         task->node+port (:cached-task->node+port worker)
         endpoint-socket-lock (:endpoint-socket-lock worker)
+        transfer-q-wait-time (:transfer-q-wait-time worker)
         ]
     (disruptor/clojure-handler
-      (fn [packets _ batch-end?]
-        (.add drainer packets)
-        
+      (fn [unit _ batch-end?]
+        (.add drainer (unit 0))
+        (.update transfer-q-wait-time (- (System/currentTimeMillis) (unit 1)))
         (when batch-end?
           (read-locked endpoint-socket-lock
              (let [node+port->socket @node+port->socket

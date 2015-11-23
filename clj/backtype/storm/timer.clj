@@ -94,6 +94,14 @@
     (locking (:lock timer)
       (.add queue [(+ (current-time-millis) (secs-to-millis-long delay-secs)) afn id]))))
 
+(defnk schedule-milli
+  [timer delay-secs-milli afn :check-active true]
+  (when check-active (check-active! timer))
+  (let [id (uuid)
+        ^PriorityQueue queue (:queue timer)]
+    (locking (:lock timer)
+      (.add queue [(+ (current-time-millis) delay-secs-milli) afn id]))))
+
 (defn schedule-recurring
   [timer delay-secs recur-secs afn]
   (schedule timer

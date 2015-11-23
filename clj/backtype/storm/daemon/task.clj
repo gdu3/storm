@@ -25,7 +25,7 @@
   (:import [backtype.storm.utils Utils])
   (:import [backtype.storm.generated ShellComponent JavaObject])
   (:import [backtype.storm.spout ShellSpout])
-  (:import [java.util Collection List ArrayList])
+  (:import [java.util Collection List ArrayList Map HashMap])
   (:require [backtype.storm
              [thrift :as thrift]
              [stats :as stats]])
@@ -182,8 +182,8 @@
     :user-context (user-topology-context (:worker executor-data) executor-data task-id)
     :builtin-metrics (builtin-metrics/make-data (:type executor-data))
     :tasks-fn (mk-tasks-fn <>)
-    :object (get-task-object (.getRawTopology ^TopologyContext (:system-context <>)) (:component-id executor-data))))
-
+    :object (get-task-object (.getRawTopology ^TopologyContext (:system-context <>)) (:component-id executor-data))
+))
 
 (defn mk-task [executor-data task-id]
   (let [task-data (mk-task-data executor-data task-id)

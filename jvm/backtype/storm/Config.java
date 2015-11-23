@@ -1462,6 +1462,18 @@ public class Config extends HashMap<String, Object> {
     public static final Object TOPOLOGY_DISRUPTOR_WAIT_TIMEOUT_MILLIS_SCHEMA = ConfigValidation.PositiveIntegerValidator;
 
 
+    public static final String I_SHUFFLE_GROUPING_ENABLE = "i.shuffle.grouping.enable";
+    public static final Object I_SHUFFLE_GROUPING_ENABLE_SCHEMA = Boolean.class;
+
+
+    public static void setIShuffleGroupingEnable(Map conf, boolean isOn) {
+        conf.put(Config.I_SHUFFLE_GROUPING_ENABLE, isOn);
+    }
+
+    public void setIShuffleGroupingEnable(boolean isOn) {
+        setIShuffleGroupingEnable(this, isOn);
+    }
+
     public static void setBuiltInMetricSecs(Map conf, int secs) {
         conf.put(Config.TOPOLOGY_BUILTIN_METRICS_BUCKET_SIZE_SECS, secs);
     }
