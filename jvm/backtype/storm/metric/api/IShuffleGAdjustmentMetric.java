@@ -28,6 +28,7 @@ import backtype.storm.utils.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import backtype.storm.generated.Grouping;
+import java.lang.Math;
 
 
 public class IShuffleGAdjustmentMetric implements IMetric {
@@ -86,27 +87,68 @@ public class IShuffleGAdjustmentMetric implements IMetric {
                     continue;
                 }
 
-                double total = 0;
-                for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
-                    total += entry.getValue().get(1) / entry.getValue().get(0);
-                }
-
                 while(tmp.size() < 100) {
                     tmp.add(null);
                 }
 
-                int idx_ = 0;
+                double total = 0;
+                double traffic_sum = 0;
+                double task_cnt = c_bucket.getValue().size();
+                double average_latency = 0;
+
                 for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
-                    int ratio = (int)(100 * (entry.getValue().get(1)/entry.getValue().get(0)) / total);
+                    average_latency += entry.getValue().get(0);
+                    traffic_sum += entry.getValue().get(1);
+                }
+
+                average_latency = average_latency/c_bucket.getValue().size();
+                double average_traffic = traffic_sum/task_cnt;
+
+                for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
+                   List<Double> curr = entry.getValue();
+                   double term = 1;
+                   if((curr.get(1)<average_traffic && curr.get(0)<average_latency) || (curr.get(1)>average_traffic && curr.get(0)>average_latency)) {
+                        term = Math.log1p(average_traffic/curr.get(1)) / Math.log(2);
+                   }
+                   curr.set(0, curr.get(1) * 1/curr.get(0) * term);
+                   
+
+                   total += curr.get(0);
+                }
+
+                int idx_ = 0;
+                List<Integer> minor = new ArrayList<Integer>();
+                for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
+                    int ratio = (int)(100 * entry.getValue().get(0) / total);
                     Integer key = entry.getKey();
-                    for(int i=0; i<ratio; i++) {
-                        tmp.set(idx_++, key);
+                    
+                    if(ratio == 0) {
+                        minor.add(key);
+                    } else {
+                        for(int i=0; i<ratio; i++) {
+                            tmp.set(idx_++, key);
+                        }
                     }
                 }
-                Integer last_key = tmp.get(idx_ - 1);
-                while(idx_ < 100) {
-                    tmp.set(idx_++, last_key);
+
+                int s_size = minor.size();
+                if (s_size == 0) {
+                    for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
+                        Integer key = entry.getKey();
+                        if(idx_<100) {
+                            tmp.set(idx_++, key);
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    int i = 0;
+                    while(idx_ < 100) {
+                        tmp.set(idx_++, minor.get(i++));
+                        i = i%s_size;
+                    }
                 }
+
                 Collections.shuffle(tmp, rand);
             }
         }

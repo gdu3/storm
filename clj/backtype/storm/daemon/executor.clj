@@ -237,7 +237,7 @@
       (if (and overflow-buffer (not (.isEmpty overflow-buffer)))
         (.add overflow-buffer [task tuple])
         (try-cause
-          (disruptor/publish batch-transfer->worker [[task tuple] (System/currentTimeMillis)] block?)
+          (disruptor/publish batch-transfer->worker [task tuple] block?)
         (catch InsufficientCapacityException e
           (if overflow-buffer
             (.add overflow-buffer [task tuple])
@@ -298,7 +298,6 @@
      :deserializer (KryoTupleDeserializer. storm-conf worker-context)
      :sampler (mk-stats-sampler storm-conf)
      :recv-q-wait-time (builtin-metrics/make-executor-recv-q-wait-time)
-     :send-q-wait-time (builtin-metrics/make-send-q-wait-time 2048)
      :ishuffleg-lists ishuffleg-lists
      :ishufflegrouping-metric (builtin-metrics/make-ishufflegrouping-metric (.getTargets worker-context component-id) (:component->sorted-tasks worker))
      :upstream-tasks (if (= :spout executor-type) 
@@ -321,15 +320,12 @@
   (let [worker-transfer-fn (:transfer-fn worker)
         cached-emit (MutableObject. (ArrayList.))
         storm-conf (:storm-conf executor-data)
-        serializer (KryoTupleSerializer. storm-conf (:worker-context executor-data))
-        send-q-wait-time (:send-q-wait-time executor-data)
-        ]
+        serializer (KryoTupleSerializer. storm-conf (:worker-context executor-data))]
     (disruptor/consume-loop*
       (:batch-transfer-queue executor-data)
       (disruptor/handler [o seq-id batch-end?]
         (let [^ArrayList alist (.getObject cached-emit)]
-          (.add alist (o 0))
-          (.update send-q-wait-time (- (System/currentTimeMillis) (o 1)))
+          (.add alist o)
           (when batch-end?
             (worker-transfer-fn serializer alist)
             (.setObject cached-emit (ArrayList.))
@@ -439,15 +435,13 @@
               s-bucket (.get downstream-tasks gstream-id)
               c-bucket (if (= nil s-bucket) nil (.get s-bucket component-id))]
           (if (and (not= nil c-bucket) (.containsKey c-bucket src-task-id))
-            (.put c-bucket src-task-id [(.getDouble tuple 4) (.getDouble tuple 5)])))
+            (.put c-bucket src-task-id (ArrayList. [(.getDouble tuple 4) (.getDouble tuple 5)]) )))
 
       1 (if (not= nil upstream-tasks) 
           (let [transfer-fn (:transfer-fn executor-data)
                 context (:worker-context executor-data)
                 execute-count (reduce + (vals (.getValueAndReset (.execute-count (:builtin-metrics task-data)))))
                 average-wait-time (-> (defaulted (.getValueAndReset (:recv-q-wait-time executor-data)) 0)
-                                      (+ (.getAverageWaitTime (:send-q-wait-time executor-data)))
-                                      (+ (.getAverageWaitTime (:transfer-q-wait-time (:worker executor-data))))
                                       (+ (average (vals (.getValueAndReset (.execute-latency (:builtin-metrics task-data)))))))]
             (log-message "IshuffleInfo " (:component-id executor-data) " " execute-count " " average-wait-time " " (System/currentTimeMillis))
 
