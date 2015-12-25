@@ -45,10 +45,10 @@
 ;; wouldn't make it to the acker until the batch timed out and another tuple was played into the queue,
 ;; unblocking the consumer
 (defnk disruptor-queue
-  [^String queue-name buffer-size timeout :claim-strategy :multi-threaded :wait-strategy :block]
+  [^String queue-name buffer-size timeout]
   (DisruptorQueue. queue-name
-                   ((CLAIM-STRATEGY claim-strategy) buffer-size)
-                   (mk-wait-strategy wait-strategy) timeout))
+                   buffer-size
+                   timeout))
 
 (defn clojure-handler
   [afn]
@@ -61,15 +61,21 @@
   [& args]
   `(clojure-handler (fn ~@args)))
 
+;;(defn publish
+;;  ([^DisruptorQueue q o block?]
+;;   (.publish q o block?))
+;;  ([q o]
+;;   (publish q o true)))
+
+;;(defn try-publish
+;;  [^DisruptorQueue q o]
+;;  (.tryPublish q o))
+
 (defn publish
   ([^DisruptorQueue q o block?]
-   (.publish q o block?))
+   (.publish q o))
   ([q o]
    (publish q o true)))
-
-(defn try-publish
-  [^DisruptorQueue q o]
-  (.tryPublish q o))
 
 (defn consume-batch
   [^DisruptorQueue queue handler]

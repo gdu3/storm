@@ -35,6 +35,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.HashMap;
 import java.util.Map;
 import backtype.storm.metric.api.IStatefulObject;
+import java.util.concurrent.ArrayBlockingQueue;
+import backtype.storm.utils.Utils;
 
 
 /**
@@ -43,43 +45,20 @@ import backtype.storm.metric.api.IStatefulObject;
  * the ability to catch up to the producer by processing tuples in batches.
  */
 public class DisruptorQueue implements IStatefulObject {
-    static final Object FLUSH_CACHE = new Object();
+    
     static final Object INTERRUPT = new Object();
-    
-    RingBuffer<MutableObject> _buffer;
-    Sequence _consumer;
-    SequenceBarrier _barrier;
-    
     // TODO: consider having a threadlocal cache of this variable to speed up reads?
     volatile boolean consumerStartedFlag = false;
-    ConcurrentLinkedQueue<Object> _cache = new ConcurrentLinkedQueue();
-    
-    private final ReentrantReadWriteLock cacheLock = new ReentrantReadWriteLock();
-    private final Lock readLock  = cacheLock.readLock();
-    private final Lock writeLock = cacheLock.writeLock();
     
     private static String PREFIX = "disruptor-";
     private String _queueName = "";
 
     private long _waitTimeout;
+    private final ArrayBlockingQueue _buffer;
     
-    public DisruptorQueue(String queueName, ClaimStrategy claim, WaitStrategy wait, long timeout) {
-         this._queueName = PREFIX + queueName;
-        _buffer = new RingBuffer<MutableObject>(new ObjectEventFactory(), claim, wait);
-        _consumer = new Sequence();
-        _barrier = _buffer.newBarrier();
-        _buffer.setGatingSequences(_consumer);
-        if(claim instanceof SingleThreadedClaimStrategy) {
-            consumerStartedFlag = true;
-        } else {
-            // make sure we flush the pending messages in cache first
-            try {
-                publishDirect(FLUSH_CACHE, true);
-            } catch (InsufficientCapacityException e) {
-                throw new RuntimeException("This code should be unreachable!", e);
-            }
-        }
-
+    public DisruptorQueue(String queueName, int size, long timeout) {
+        this._queueName = PREFIX + queueName;
+        _buffer = new ArrayBlockingQueue(size, true);
         _waitTimeout = timeout;
     }
     
@@ -88,7 +67,7 @@ public class DisruptorQueue implements IStatefulObject {
     }
     
     public void consumeBatch(EventHandler<Object> handler) {
-        consumeBatchToCursor(_barrier.getCursor(), handler);
+        consumeBatchToCursor(_buffer.size(), handler);
     }
     
     public void haltWithInterrupt() {
@@ -96,47 +75,46 @@ public class DisruptorQueue implements IStatefulObject {
     }
     
     public void consumeBatchWhenAvailable(EventHandler<Object> handler) {
-        try {
-            final long nextSequence = _consumer.get() + 1;
-            final long availableSequence =
-                    _waitTimeout == 0L ? _barrier.waitFor(nextSequence) : _barrier.waitFor(nextSequence, _waitTimeout,
-                            TimeUnit.MILLISECONDS);
+        int size = _buffer.size();
+        if(size > 0) {
+            consumeBatchToCursor(size, handler);
+        } else {
+            consumeBatchWithWaitingTime(_waitTimeout, handler);
+        }
+    }
 
-            if (availableSequence >= nextSequence) {
-                consumeBatchToCursor(availableSequence, handler);
+    private void consumeBatchWithWaitingTime(long timeout, EventHandler<Object> handler) {
+        try {
+            Object o = _buffer.poll(timeout, TimeUnit.MILLISECONDS);
+            if(o==null) return;
+            else if (o==INTERRUPT) {
+                throw new InterruptedException("Disruptor processing interrupted");
+            } else {
+                int size = _buffer.size();
+                handler.onEvent(o, 0, size==0);
+                if(size!=0) {
+                    consumeBatchToCursor(size, handler);
+                }
             }
-        } catch (AlertException e) {
-            throw new RuntimeException(e);
-        } catch (InterruptedException e) {
+        } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
     
-    
-    private void consumeBatchToCursor(long cursor, EventHandler<Object> handler) {
-        for(long curr = _consumer.get() + 1; curr <= cursor; curr++) {
+    private void consumeBatchToCursor(int size, EventHandler<Object> handler) {
+        for(int i=1; i<=size; i++) {
             try {
-                MutableObject mo = _buffer.get(curr);
-                Object o = mo.o;
-                mo.setObject(null);
-                if(o==FLUSH_CACHE) {
-                    Object c = null;
-                    while(true) {                        
-                        c = _cache.poll();
-                        if(c==null) break;
-                        else handler.onEvent(c, curr, true);
-                    }
-                } else if(o==INTERRUPT) {
+                Object o = _buffer.poll();
+                if(o==null) continue;
+                else if (o==INTERRUPT) {
                     throw new InterruptedException("Disruptor processing interrupted");
                 } else {
-                    handler.onEvent(o, curr, curr == cursor);
+                    handler.onEvent(o, i, i==size);
                 }
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         }
-        //TODO: only set this if the consumer cursor has changed?
-        _consumer.set(cursor);
     }
     
     /*
@@ -144,70 +122,31 @@ public class DisruptorQueue implements IStatefulObject {
      */
     public void publish(Object obj) {
         try {
-            publish(obj, true);
-        } catch (InsufficientCapacityException ex) {
-            throw new RuntimeException("This code should be unreachable!");
+            _buffer.put(obj);
+        } catch (InterruptedException e) {
+            throw new RuntimeException("This code should be unreachable! InterruptedException");
+        } catch (NullPointerException e) {
+            throw new RuntimeException("This code should be unreachable! NullPointerException");
         }
     }
     
-    public void tryPublish(Object obj) throws InsufficientCapacityException {
-        publish(obj, false);
-    }
-    
-    public void publish(Object obj, boolean block) throws InsufficientCapacityException {
-
-        boolean publishNow = consumerStartedFlag;
-
-        if (!publishNow) {
-            readLock.lock(); 
-            try {
-                publishNow = consumerStartedFlag;
-                if (!publishNow) {
-                    _cache.add(obj);
-                }
-            } finally {
-                readLock.unlock();
-            }
-        }
-        
-        if (publishNow) {
-            publishDirect(obj, block);
-        }
-    }
-    
-    private void publishDirect(Object obj, boolean block) throws InsufficientCapacityException {
-        final long id;
-        if(block) {
-            id = _buffer.next();
-        } else {
-            id = _buffer.tryNext(1);
-        }
-        final MutableObject m = _buffer.get(id);
-        m.setObject(obj);
-        _buffer.publish(id);
-    }
+   
     
     public void consumerStarted() {
-
-        consumerStartedFlag = true;
-        
-        // Use writeLock to make sure all pending cache add opearation completed
-        writeLock.lock();
-        writeLock.unlock();
     }
     
-    public long  population() { return (writePos() - readPos()); }
-    public long  capacity()   { return _buffer.getBufferSize(); }
-    public long  writePos()   { return _buffer.getCursor(); }
-    public long  readPos()    { return _consumer.get(); }
-    public float pctFull()    { return (1.0F * population() / capacity()); }
+    public long  population() { return 1000; }
+    public long  capacity()   { return 1000; }
+    public long  writePos()   { return 1000; }
+    public long  readPos()    { return 1000; }
+    public float pctFull()    { return 0; }
 
     @Override
     public Object getState() {
         Map state = new HashMap<String, Object>();
         // get readPos then writePos so it's never an under-estimate
-        long rp = readPos();
-        long wp = writePos();
+        long rp = 1000;
+        long wp = 1000;
         state.put("capacity",   capacity());
         state.put("population", wp - rp);
         state.put("write_pos",  wp);

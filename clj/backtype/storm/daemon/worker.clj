@@ -34,6 +34,7 @@
   (:import [backtype.storm.security.auth AuthUtils])
   (:import [javax.security.auth Subject])
   (:import [java.security PrivilegedExceptionAction])
+  (:import [java.util.concurrent ArrayBlockingQueue])
   (:gen-class))
 
 (defmulti mk-suicide-fn cluster-mode)
@@ -151,10 +152,12 @@
 (defn- mk-receive-queue-map [storm-conf executors]
   (->> executors
        ;; TODO: this depends on the type of executor
-       (map (fn [e] [e (disruptor/disruptor-queue (str "receive-queue" e)
-                                                  (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
-                                                  (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)
-                                                  :wait-strategy (storm-conf TOPOLOGY-DISRUPTOR-WAIT-STRATEGY))]))
+       ;;(map (fn [e] [e (disruptor/disruptor-queue (str "receive-queue" e)
+       ;;                                           (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+       ;;                                           (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)
+       ;;                                           :wait-strategy (storm-conf TOPOLOGY-DISRUPTOR-WAIT-STRATEGY))]))
+       (map (fn [e] [e (disruptor/disruptor-queue (str "receive-queue" e) (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+                        (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS))]))
        (into {})
        ))
 
