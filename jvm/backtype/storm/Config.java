@@ -1461,6 +1461,19 @@ public class Config extends HashMap<String, Object> {
     public static final String TOPOLOGY_DISRUPTOR_WAIT_TIMEOUT_MILLIS="topology.disruptor.wait.timeout.millis";
     public static final Object TOPOLOGY_DISRUPTOR_WAIT_TIMEOUT_MILLIS_SCHEMA = ConfigValidation.PositiveIntegerValidator;
 
+
+    public static final String TOPOLOGY_IMPROVED_CONCURRENCY_MODEL = "topology.improved.concurrency.model";
+    public static final Object TOPOLOGY_IMPROVED_CONCURRENCY_MODEL_SCHEMA = Boolean.class;
+
+
+    public static void setImprovedConcurrencyModel(Map conf, boolean isOn) {
+        conf.put(Config.TOPOLOGY_IMPROVED_CONCURRENCY_MODEL, isOn);
+    }
+
+    public void setImprovedConcurrencyModel(boolean isOn) {
+        setImprovedConcurrencyModel(this, isOn);
+    }    
+
     public static void setClasspath(Map conf, String cp) {
         conf.put(Config.TOPOLOGY_CLASSPATH, cp);
     }

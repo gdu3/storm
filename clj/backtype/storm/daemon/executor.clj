@@ -656,6 +656,7 @@
         ;; the overflow buffer is might gradually fill degrading the performance gradually
         ;; eventually running out of memory, but at least prevent live-locks/deadlocks.
         overflow-buffer (if (storm-conf TOPOLOGY-BOLTS-OUTGOING-OVERFLOW-BUFFER-ENABLE) (ConcurrentLinkedQueue.) nil)
+        first-task-data (first (vals task-datas))
         tuple-action-fn (fn [task-id ^TupleImpl tuple]
                           ;; synchronization needs to be done with a key provided by this bolt, otherwise:
                           ;; spout 1 sends synchronization (s1), dies, same spout restarts somewhere else, sends synchronization (s2) and incremental update. s2 and update finish before s1 -> lose the incremental update
@@ -676,12 +677,16 @@
                           (let [stream-id (.getSourceStreamId tuple)]
                             (condp = stream-id
                               Constants/CREDENTIALS_CHANGED_STREAM_ID 
-                                (let [task-data (get task-datas task-id)
+                                (let [task-data (if (storm-conf TOPOLOGY-IMPROVED-CONCURRENCY-MODEL)
+                                                    (defaulted (get task-datas task-id) first-task-data)
+                                                    (get task-datas task-id))
                                       bolt-obj (:object task-data)]
                                   (when (instance? ICredentialsListener bolt-obj)
                                     (.setCredentials bolt-obj (.getValue tuple 0))))
                               Constants/METRICS_TICK_STREAM_ID (metrics-tick executor-data (get task-datas task-id) tuple overflow-buffer)
-                              (let [task-data (get task-datas task-id)
+                              (let [task-data (if (storm-conf TOPOLOGY-IMPROVED-CONCURRENCY-MODEL)
+                                                    (defaulted (get task-datas task-id) first-task-data)
+                                                    (get task-datas task-id))
                                     ^IBolt bolt-obj (:object task-data)
                                     user-context (:user-context task-data)
                                     sampler? (sampler)
@@ -814,7 +819,7 @@
                          )))))
         (reset! open-or-prepare-was-called? true)        
         (log-message "Prepared bolt " component-id ":" (keys task-datas))
-        (setup-metrics! executor-data)
+        ;;(setup-metrics! executor-data)
 
         (let [receive-queue (:receive-queue executor-data)
               event-handler (mk-task-receiver executor-data tuple-action-fn)]

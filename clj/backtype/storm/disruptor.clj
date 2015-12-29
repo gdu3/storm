@@ -15,7 +15,7 @@
 ;; limitations under the License.
 
 (ns backtype.storm.disruptor
-  (:import [backtype.storm.utils DisruptorQueue])
+  (:import [backtype.storm.utils DisruptorQueue DisruptorQueueS])
   (:import [com.lmax.disruptor MultiThreadedClaimStrategy SingleThreadedClaimStrategy
             BlockingWaitStrategy SleepingWaitStrategy YieldingWaitStrategy
             BusySpinWaitStrategy])
@@ -45,10 +45,17 @@
 ;; wouldn't make it to the acker until the batch timed out and another tuple was played into the queue,
 ;; unblocking the consumer
 (defnk disruptor-queue
-  [^String queue-name buffer-size timeout]
+  [^String queue-name buffer-size timeout :claim-strategy :multi-threaded :wait-strategy :block]
   (DisruptorQueue. queue-name
-                   buffer-size
-                   timeout))
+                   ((CLAIM-STRATEGY claim-strategy) buffer-size)
+                   (mk-wait-strategy wait-strategy) timeout))
+
+(defn disruptor-queueS
+  [^String queue-name buffer-size timeout]
+  (log-message "queue-creation-marker")
+  (DisruptorQueueS. queue-name
+                    buffer-size
+                    timeout))
 
 (defn clojure-handler
   [afn]
@@ -61,40 +68,34 @@
   [& args]
   `(clojure-handler (fn ~@args)))
 
-;;(defn publish
-;;  ([^DisruptorQueue q o block?]
-;;   (.publish q o block?))
-;;  ([q o]
-;;   (publish q o true)))
+(defn publish
+  ([q o block?]
+   (.publish q o block?))
+  ([q o]
+   (publish q o true)))
 
 ;;(defn try-publish
 ;;  [^DisruptorQueue q o]
 ;;  (.tryPublish q o))
 
-(defn publish
-  ([^DisruptorQueue q o block?]
-   (.publish q o))
-  ([q o]
-   (publish q o true)))
-
 (defn consume-batch
-  [^DisruptorQueue queue handler]
+  [queue handler]
   (.consumeBatch queue handler))
 
 (defn consume-batch-when-available
-  [^DisruptorQueue queue handler]
+  [queue handler]
   (.consumeBatchWhenAvailable queue handler))
 
 (defn consumer-started!
-  [^DisruptorQueue queue]
+  [queue]
   (.consumerStarted queue))
 
 (defn halt-with-interrupt!
-  [^DisruptorQueue queue]
+  [queue]
   (.haltWithInterrupt queue))
 
 (defnk consume-loop*
-  [^DisruptorQueue queue handler
+  [queue handler
    :kill-fn (fn [error] (exit-process! 1 "Async loop died!"))]
   (let [ret (async-loop
               (fn [] (consume-batch-when-available queue handler) 0)

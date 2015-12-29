@@ -21,13 +21,13 @@
   (:require [clojure.set :as set])
   (:require [backtype.storm.messaging.loader :as msg-loader])
   (:import [java.util.concurrent Executors])
-  (:import [java.util ArrayList HashMap])
+  (:import [java.util ArrayList HashMap HashSet])
   (:import [backtype.storm.utils Utils TransferDrainer ThriftTopologyUtils])
   (:import [backtype.storm.messaging TransportFactory])
   (:import [backtype.storm.messaging TaskMessage IContext IConnection ConnectionWithStatus ConnectionWithStatus$Status])
   (:import [backtype.storm.daemon Shutdownable])
   (:import [backtype.storm.serialization KryoTupleSerializer])
-  (:import [backtype.storm.generated StormTopology])
+  (:import [backtype.storm.generated StormTopology Grouping])
   (:import [backtype.storm.tuple Fields])
   (:import [backtype.storm.task WorkerTopologyContext])
   (:import [backtype.storm Constants])
@@ -149,17 +149,33 @@
           (transfer-fn serializer tuple-batch)))
       transfer-fn)))
 
-(defn- mk-receive-queue-map [storm-conf executors]
-  (->> executors
-       ;; TODO: this depends on the type of executor
-       ;;(map (fn [e] [e (disruptor/disruptor-queue (str "receive-queue" e)
-       ;;                                           (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
-       ;;                                           (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)
-       ;;                                           :wait-strategy (storm-conf TOPOLOGY-DISRUPTOR-WAIT-STRATEGY))]))
-       (map (fn [e] [e (disruptor/disruptor-queue (str "receive-queue" e) (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
-                        (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS))]))
-       (into {})
-       ))
+(defn- mk-receive-queue-map [storm-conf executors worker-context]
+  (let [component-queue-map (HashMap.)]
+    (->> executors
+       (map (fn [e]
+              (let [task-ids (executor-id->tasks e)
+                    component-id (.getComponentId worker-context (first task-ids))
+                    executor-type (executor/executor-type worker-context component-id)
+                    improved-concurrency-model (storm-conf TOPOLOGY-IMPROVED-CONCURRENCY-MODEL)
+                    is-all-shuffle-grouping (let [ret (HashSet.)]
+                                              (fast-map-iter [[gstread-id grouping] (.getSources worker-context component-id)]
+                                                (if (= (.is_set_shuffle grouping) false)
+                                                  (.add ret gstread-id)))
+                                              (= 0 (.size ret)))]
+                (if (or (= executor-type :spout) (= Constants/SYSTEM_COMPONENT_ID component-id))
+                      [e (disruptor/disruptor-queueS (str "receive-queue" e)
+                                                  (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+                                                  (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS))]
+                      (if (and improved-concurrency-model is-all-shuffle-grouping)
+                        [e (get-with-default component-queue-map component-id (disruptor/disruptor-queueS (str "receive-queue" e) 
+                                                                                                          (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+                                                                                                          (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)))]
+                        [e (disruptor/disruptor-queueS (str "receive-queue" e)
+                                                  (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+                                                  (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS))]
+                      )))))
+        (into {})
+       )))
 
 (defn- stream->fields [^StormTopology topology component]
   (->> (ThriftTopologyUtils/getComponentCommon topology component)
@@ -200,16 +216,13 @@
         transfer-queue (disruptor/disruptor-queue "worker-transfer-queue" (storm-conf TOPOLOGY-TRANSFER-BUFFER-SIZE)
                                                   (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)
                                                   :wait-strategy (storm-conf TOPOLOGY-DISRUPTOR-WAIT-STRATEGY))
-        executor-receive-queue-map (mk-receive-queue-map storm-conf executors)
-        
-        receive-queue-map (->> executor-receive-queue-map
-                               (mapcat (fn [[e queue]] (for [t (executor-id->tasks e)] [t queue])))
-                               (into {}))
-
         topology (read-supervisor-topology conf storm-id)
         mq-context  (if mq-context
                       mq-context
-                      (TransportFactory/makeContext storm-conf))]
+                      (TransportFactory/makeContext storm-conf))
+        tasks-map   (->> executors
+                      (mapcat (fn [e] (for [t (executor-id->tasks e)] [t nil])))
+                      (into {}))]
 
     (recursive-map
       :conf conf
@@ -227,7 +240,7 @@
       :worker-active-flag (atom false)
       :storm-active-atom (atom false)
       :executors executors
-      :task-ids (->> receive-queue-map keys (map int) sort)
+      :task-ids (->> tasks-map keys (map int) sort)
       :storm-conf storm-conf
       :topology topology
       :system-topology (system-topology! storm-conf topology)
@@ -244,8 +257,6 @@
       :cached-node+port->socket (atom {})
       :cached-task->node+port (atom {})
       :transfer-queue transfer-queue
-      :executor-receive-queue-map executor-receive-queue-map
-      :short-executor-receive-queue-map (map-key first executor-receive-queue-map)
       :task->short-executor (->> executors
                                  (mapcat (fn [e] (for [t (executor-id->tasks e)] [t (first e)])))
                                  (into {})
@@ -254,6 +265,8 @@
       :uptime (uptime-computer)
       :default-shared-resources (mk-default-resources <>)
       :user-shared-resources (mk-user-resources <>)
+      :executor-receive-queue-map (mk-receive-queue-map storm-conf executors (worker-context <>))
+      :short-executor-receive-queue-map (map-key first (:executor-receive-queue-map <>))
       :transfer-local-fn (mk-transfer-local-fn <>)
       :receiver-thread-count (get storm-conf WORKER-RECEIVER-THREAD-COUNT)
       :transfer-fn (mk-transfer-fn <>)
