@@ -15,7 +15,7 @@
 ;; limitations under the License.
 
 (ns backtype.storm.disruptor
-  (:import [backtype.storm.utils DisruptorQueue DisruptorQueueS])
+  (:import [backtype.storm.utils DisruptorQueue DisruptorQueueS DisruptorQueueSS])
   (:import [com.lmax.disruptor MultiThreadedClaimStrategy SingleThreadedClaimStrategy
             BlockingWaitStrategy SleepingWaitStrategy YieldingWaitStrategy
             BusySpinWaitStrategy])
@@ -52,10 +52,17 @@
 
 (defn disruptor-queueS
   [^String queue-name buffer-size timeout]
-  (log-message "queue-creation-marker")
+  (log-message "queues-creation-marker")
   (DisruptorQueueS. queue-name
                     buffer-size
                     timeout))
+
+(defnk disruptor-queueSS
+  [^String queue-name buffer-size timeout nums :claim-strategy :multi-threaded :wait-strategy :block]
+  (log-message "queuess-creation-marker")
+  (DisruptorQueueSS. queue-name
+                    ((CLAIM-STRATEGY claim-strategy) buffer-size)
+                    (mk-wait-strategy wait-strategy) timeout nums))
 
 (defn clojure-handler
   [afn]
@@ -85,6 +92,10 @@
 (defn consume-batch-when-available
   [queue handler]
   (.consumeBatchWhenAvailable queue handler))
+
+(defn consume-batch-when-available-s
+  [^DisruptorQueueSS queue handler id]
+  (.consumeBatchWhenAvailable queue handler id))
 
 (defn consumer-started!
   [queue]

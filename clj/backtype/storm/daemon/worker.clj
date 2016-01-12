@@ -150,7 +150,26 @@
       transfer-fn)))
 
 (defn- mk-receive-queue-map [storm-conf executors worker-context]
-  (let [component-queue-map (HashMap.)]
+  (let [component-queue-map (HashMap.)
+        component-thread-cnt (HashMap.)]
+    (fast-list-iter [e executors]
+              (let [task-ids (executor-id->tasks e)
+                    component-id (.getComponentId worker-context (first task-ids))
+                    executor-type (executor/executor-type worker-context component-id)
+                    improved-concurrency-model (storm-conf TOPOLOGY-IMPROVED-CONCURRENCY-MODEL)
+                    is-all-shuffle-grouping (let [ret (HashSet.)]
+                                              (fast-map-iter [[gstread-id grouping] (.getSources worker-context component-id)]
+                                                (if (= (.is_set_shuffle grouping) false)
+                                                  (.add ret gstread-id)))
+                                              (= 0 (.size ret)))]
+                (if (or (= executor-type :spout) (system-id? component-id))
+                  nil
+                  (if (and improved-concurrency-model is-all-shuffle-grouping)
+                    (if (= nil (.get component-thread-cnt component-id))
+                      (.put component-thread-cnt component-id 1)
+                      (.put component-thread-cnt component-id (+ 1 (.get component-thread-cnt component-id))))
+                    nil))))
+
     (->> executors
        (map (fn [e]
               (let [task-ids (executor-id->tasks e)
@@ -162,17 +181,21 @@
                                                 (if (= (.is_set_shuffle grouping) false)
                                                   (.add ret gstread-id)))
                                               (= 0 (.size ret)))]
-                (if (or (= executor-type :spout) (= Constants/SYSTEM_COMPONENT_ID component-id))
-                      [e (disruptor/disruptor-queueS (str "receive-queue" e)
-                                                  (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
-                                                  (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS))]
+                (if (or (= executor-type :spout) (system-id? component-id))
+                      [e (disruptor/disruptor-queue (str "receive-queue" e)
+                                                    (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+                                                    (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)
+                                                    :wait-strategy (storm-conf TOPOLOGY-DISRUPTOR-WAIT-STRATEGY))]
                       (if (and improved-concurrency-model is-all-shuffle-grouping)
-                        [e (get-with-default component-queue-map component-id (disruptor/disruptor-queueS (str "receive-queue" e) 
-                                                                                                          (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
-                                                                                                          (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)))]
-                        [e (disruptor/disruptor-queueS (str "receive-queue" e)
-                                                  (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
-                                                  (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS))]
+                        [e (get-with-default component-queue-map component-id (disruptor/disruptor-queueSS (str "receive-queue" e)
+                                                                                                           (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+                                                                                                           (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)
+                                                                                                           (.get component-thread-cnt component-id)
+                                                                                                           :wait-strategy (storm-conf TOPOLOGY-DISRUPTOR-WAIT-STRATEGY)))]
+                        [e (disruptor/disruptor-queue (str "receive-queue" e)
+                                                      (storm-conf TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+                                                      (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)
+                                                      :wait-strategy (storm-conf TOPOLOGY-DISRUPTOR-WAIT-STRATEGY))]
                       )))))
         (into {})
        )))

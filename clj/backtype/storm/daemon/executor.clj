@@ -822,10 +822,15 @@
         ;;(setup-metrics! executor-data)
 
         (let [receive-queue (:receive-queue executor-data)
-              event-handler (mk-task-receiver executor-data tuple-action-fn)]
-          (disruptor/consumer-started! receive-queue)
-          (fn []            
-            (disruptor/consume-batch-when-available receive-queue event-handler)
+              event-handler (mk-task-receiver executor-data tuple-action-fn)
+              id (let [t-id (disruptor/consumer-started! receive-queue)]
+                  (if (= nil t-id)
+                    nil
+                    (Integer. t-id)))]
+          (fn []
+            (if (not= nil id)
+              (disruptor/consume-batch-when-available-s receive-queue event-handler id)
+              (disruptor/consume-batch-when-available receive-queue event-handler))
             ;; try to clear the overflow-buffer
             (try-cause
               (while (and overflow-buffer (not (.isEmpty overflow-buffer)))
