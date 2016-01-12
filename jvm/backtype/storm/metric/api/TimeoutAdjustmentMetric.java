@@ -16,30 +16,33 @@
  * limitations under the License.
  */
 package backtype.storm.metric.api;
-
 import backtype.storm.metric.api.IMetric;
+import java.util.Arrays;
 
 public class TimeoutAdjustmentMetric implements IMetric {
     boolean enable = false;
-    //int ack_num = 0;
+
     int fail_num = 0;
     int total_num = 0;
-    double timeout_value = 0; // in millisec
-    double default_timeout_ = 0; // in millisec
+    int timeout_value = 0; // in millisec
+    int default_timeout_ = 0; // in millisec
+    int[] time_ptrs;
+    int index = 0;
 
     public TimeoutAdjustmentMetric(int default_timeout) {
         default_timeout_ = default_timeout * 1000;
         timeout_value = default_timeout * 1000;
+        time_ptrs = new int[1000];
     }
 
     public void setEnable() {
         enable = true;
     }
     
-    public boolean UpAck() {
+    public boolean UpAck(int time_delta) {
         if (enable) {
-            //++ack_num;
-            if (++total_num >= 1500) {
+            time_ptrs[index++] = time_delta;
+            if (++total_num >= 1000) {
                 reCalculateTimeout();
                 return true;
             } else {
@@ -49,40 +52,42 @@ public class TimeoutAdjustmentMetric implements IMetric {
         return false;
     }
 
-    public boolean UpFail() {
+    public boolean UpFail(int time_delta) {
         if (enable) {
-            ++fail_num;
-            if (++total_num >= 1500) {
-                reCalculateTimeout();
-                return true;
-            } else {
-                return false;
-            }
         }
         return false;
     }
 
     public int getTimeoutValue() {
-        return (int)(timeout_value);
+        return timeout_value;
     }
 
     public void reCalculateTimeout() {
-        if (fail_num < 15) {
-            timeout_value = timeout_value * 0.8;
-        } else if (fail_num > 105) {
-            timeout_value = min(timeout_value * 2, default_timeout_);
-        } else if (fail_num >= 15 && fail_num < 45) {
-            timeout_value = timeout_value * 0.9;
-        }
-
-        fail_num = 0;
         total_num = 0;
+        index = 0;
+        Arrays.sort(time_ptrs);
+        int ninth = AverageTime(896,905);
+        int ninth_five = AverageTime(946,955);
+        int ninth_nine = AverageTime(986,995);
+        
+        if (2 * ninth < ninth_nine) {
+            timeout_value = ninth;
+        } else if (2 * ninth_five < time_ptrs[999]){
+            timeout_value = ninth_five;
+        } else {
+            timeout_value = time_ptrs[999];
+        }
     }
 
-    double min(double a, double b) {
-        return a<b? a : b;
+    private int AverageTime(int start, int end) {
+        int sum = 0;
+        int num = end - start + 1;
+        for(int i=start; i<=end; i++) {
+            sum += time_ptrs[i];
+        }
+        return sum/num;
     }
-
+    
     public Object getValueAndReset() {
         return null;
     }

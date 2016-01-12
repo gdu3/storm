@@ -427,8 +427,8 @@
     (when time-delta
       (builtin-metrics/spout-failed-tuple! (:builtin-metrics task-data) (:stats executor-data) (:stream tuple-info))      
       (stats/spout-failed-tuple! (:stats executor-data) (:stream tuple-info) time-delta)
-      (if (= true (.UpFail timeout-adjustment))
-        (log-message "TimeoutV: " (.getTimeoutValue timeout-adjustment) " " (System/currentTimeMillis)))
+      ;;(if (= true (.UpFail timeout-adjustment (int time-delta)))
+      ;;  (log-message "TimeoutV: " (.getTimeoutValue timeout-adjustment) " " (System/currentTimeMillis)))
       )
     ))
 
@@ -447,7 +447,7 @@
     (when time-delta
       (builtin-metrics/spout-acked-tuple! (:builtin-metrics task-data) (:stats executor-data) (:stream tuple-info) time-delta)
       (stats/spout-acked-tuple! (:stats executor-data) (:stream tuple-info) time-delta)
-      (if (= true (.UpAck timeout-adjustment))
+      (if (= true (.UpAck timeout-adjustment (int time-delta)))
         (log-message "TimeoutV: " (.getTimeoutValue timeout-adjustment) " " (System/currentTimeMillis)))
       )
     ))
@@ -627,7 +627,45 @@
           (start-timeout-adjustment! executor-data))
         
         (disruptor/consumer-started! (:receive-queue executor-data))
-        (fn []
+        (let [replay-fn (fn [task-id task-data tasks-fn out-stream-id values message-id out-task-id]
+                                       (.increment emitted-count)
+                                       (let [out-tasks (if out-task-id
+                                                         (tasks-fn out-task-id out-stream-id values)
+                                                         (tasks-fn out-stream-id values))
+                                             rooted? (and message-id has-ackers?)
+                                             root-id (if rooted? (MessageId/generateId rand))
+                                             out-ids (fast-list-for [t out-tasks] (if rooted? (MessageId/generateId rand)))]
+                                         (fast-list-iter [out-task out-tasks id out-ids]
+                                                         (let [tuple-id (if rooted?
+                                                                          (MessageId/makeRootId root-id id)
+                                                                          (MessageId/makeUnanchored))
+                                                               out-tuple (TupleImpl. worker-context
+                                                                                     values
+                                                                                     task-id
+                                                                                     out-stream-id
+                                                                                     tuple-id)]
+                                                           (transfer-fn out-task
+                                                                        out-tuple
+                                                                        overflow-buffer)
+                                                           ))
+                                         (if (and rooted?
+                                                  (not (.isEmpty out-ids)))
+                                           (do
+                                             (.put pending root-id [task-id
+                                                                    message-id
+                                                                    {:stream out-stream-id :values values}
+                                                                    (if (sampler) (System/currentTimeMillis))])
+                                             (task/send-unanchored task-data
+                                                                   ACKER-INIT-STREAM-ID
+                                                                   [root-id (bit-xor-vals out-ids) task-id]
+                                                                   overflow-buffer))
+                                           (when message-id
+                                             (ack-spout-msg executor-data task-data message-id
+                                                            {:stream out-stream-id :values values}
+                                                            (if (sampler) 0) "0:" -1)))
+                                         (or out-tasks [])
+                                         ))]
+          (fn []
           ;; This design requires that spouts be non-blocking
           (disruptor/consume-batch receive-queue event-handler)
           
@@ -636,7 +674,7 @@
           (try-cause
             (while (not (.isEmpty replay-buffer))
               (let [[task-id msg-id tuple-info start-time-ms] (.poll replay-buffer)]
-                (.emit (._collector (fast-first spouts)) (:stream tuple-info) (:values tuple-info) msg-id)
+                (replay-fn task-id (get task-datas task-id) (:tasks-fn (get task-datas task-id)) (:stream tuple-info) (:values tuple-info) msg-id nil)
                 ))
           (catch InsufficientCapacityException e
             ))
@@ -675,7 +713,7 @@
                   (.emptyEmit spout-wait-strategy (.get empty-emit-streak)))
               (.set empty-emit-streak 0)
               ))           
-          0))
+          0)))
       :kill-fn (:report-error-and-die executor-data)
       :factory? true
       :thread-name component-id)]))

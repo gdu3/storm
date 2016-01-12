@@ -79,11 +79,12 @@ public class RotatingMap<K, V> {
     public Map<K, V> rotate_to_head() {
         Map<K, V> dead = _buckets.removeLast();
         _buckets.addFirst((HashMap<K, V>)dead);
+        /*
         if(_callback!=null) {
             for(Entry<K, V> entry: dead.entrySet()) {
                 _callback.expire(entry.getKey(), entry.getValue());
             }
-        }
+        }*/
         return dead;
     }
 
