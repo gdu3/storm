@@ -14,8 +14,9 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (ns backtype.storm.daemon.builtin-metrics
-  (:import [backtype.storm.metric.api MultiCountMetric MultiReducedMetric MeanReducer StateMetric IMetric IStatefulObject])
-  (:import [backtype.storm Config])
+  (:import [backtype.storm.metric.api MultiCountMetric MultiReducedMetric MeanReducer StateMetric IMetric IStatefulObject QueuingDelayMetric])
+  (:import [backtype.storm Config Constants])
+  (:use [backtype.storm.daemon common])
   (:use [backtype.storm.stats :only [stats-rate]]))
 
 (defrecord BuiltinSpoutMetrics [^MultiCountMetric ack-count                                
@@ -45,6 +46,11 @@
                                (MultiReducedMetric. (MeanReducer.))
                                (MultiCountMetric.)
                                (MultiCountMetric.))))
+
+(defn make-q-delay-metric [executor-type component-id executor-id]
+  (if (or (= executor-type :spout) (system-id? component-id))
+    nil
+    (QueuingDelayMetric. executor-id)))
 
 (defn register-all [builtin-metrics  storm-conf topology-context]
   (doseq [[kw imetric] builtin-metrics]

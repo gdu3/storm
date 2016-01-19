@@ -106,7 +106,7 @@
         (fast-map-iter [[short-executor pairs] grouped]
           (let [q (short-executor-receive-queue-map short-executor)]
             (if q
-              (disruptor/publish q pairs)
+              (disruptor/publish q [pairs (System/currentTimeMillis)])
               (log-warn "Received invalid messages for unknown tasks. Dropping... ")
               )))))))
 

@@ -261,6 +261,7 @@
                                ((:suicide-fn <>))))
      :deserializer (KryoTupleDeserializer. storm-conf worker-context)
      :sampler (mk-stats-sampler storm-conf)
+     :recv-q-delay (builtin-metrics/make-q-delay-metric executor-type component-id (.toString executor-id))
      ;; TODO: add in the executor-specific stuff in a :specific... or make a spout-data, bolt-data function?
      )))
 
@@ -292,7 +293,7 @@
        (fn []
          (disruptor/publish
           receive-queue
-          [[nil (TupleImpl. worker-context [interval] Constants/SYSTEM_TASK_ID Constants/METRICS_TICK_STREAM_ID)]]))))))
+          [[[nil (TupleImpl. worker-context [interval] Constants/SYSTEM_TASK_ID Constants/METRICS_TICK_STREAM_ID)]] (System/currentTimeMillis)]))))))
 
 (defn metrics-tick
   ([executor-data task-data ^TupleImpl tuple overflow-buffer]
@@ -338,7 +339,7 @@
           (fn []
             (disruptor/publish
               receive-queue
-              [[nil (TupleImpl. context [tick-time-secs] Constants/SYSTEM_TASK_ID Constants/SYSTEM_TICK_STREAM_ID)]]
+              [[[nil (TupleImpl. context [tick-time-secs] Constants/SYSTEM_TASK_ID Constants/SYSTEM_TICK_STREAM_ID)]] (System/currentTimeMillis)]
               )))))))
 
 (defn mk-executor [worker executor-id initial-credentials]
@@ -375,7 +376,7 @@
               context (:worker-context executor-data)]
           (disruptor/publish
             receive-queue
-            [[nil (TupleImpl. context [creds] Constants/SYSTEM_TASK_ID Constants/CREDENTIALS_CHANGED_STREAM_ID)]]
+            [[[nil (TupleImpl. context [creds] Constants/SYSTEM_TASK_ID Constants/CREDENTIALS_CHANGED_STREAM_ID)]] (System/currentTimeMillis)]
               )))
       Shutdownable
       (shutdown
@@ -430,19 +431,23 @@
   (let [^KryoTupleDeserializer deserializer (:deserializer executor-data)
         task-ids (:task-ids executor-data)
         debug? (= true (-> executor-data :storm-conf (get TOPOLOGY-DEBUG)))
+        recv-q-delay (:recv-q-delay executor-data)
         ]
     (disruptor/clojure-handler
-      (fn [tuple-batch sequence-id end-of-batch?]
-        (fast-list-iter [[task-id msg] tuple-batch]
-          (let [^TupleImpl tuple (if (instance? Tuple msg) msg (.deserialize deserializer msg))]
-            (when debug? (log-message "Processing received message FOR " task-id " TUPLE: " tuple))
-            (if task-id
-              (tuple-action-fn task-id tuple)
-              ;; null task ids are broadcast tuples
-              (fast-list-iter [task-id task-ids]
+      (fn [unit sequence-id end-of-batch?]
+        (let [tuple-batch (unit 0)
+              enqueue-time (unit 1)]
+          (fast-list-iter [[task-id msg] tuple-batch]
+            (let [^TupleImpl tuple (if (instance? Tuple msg) msg (.deserialize deserializer msg))]
+              (when debug? (log-message "Processing received message FOR " task-id " TUPLE: " tuple))
+              (if (not= nil recv-q-delay) (.update recv-q-delay (- (System/currentTimeMillis) enqueue-time)))
+              (if task-id
                 (tuple-action-fn task-id tuple)
-                ))
-            ))))))
+                ;; null task ids are broadcast tuples
+                (fast-list-iter [task-id task-ids]
+                  (tuple-action-fn task-id tuple)
+                  ))
+            )))))))
 
 (defn executor-max-spout-pending [storm-conf num-tasks]
   (let [p (storm-conf TOPOLOGY-MAX-SPOUT-PENDING)]
