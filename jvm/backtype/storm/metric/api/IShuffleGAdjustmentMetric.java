@@ -72,6 +72,50 @@ public class IShuffleGAdjustmentMetric implements IMetric {
         }
     }
 
+
+    /*
+    public void adjustDownstreamRatio(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {
+
+        for (Map.Entry<String, HashMap<String, HashMap<Integer, List<Double>>>> s_bucket : downstream_tasks_.entrySet()) {
+            String stream_id = s_bucket.getKey();
+            for (Map.Entry<String, HashMap<Integer, List<Double>>> c_bucket : s_bucket.getValue().entrySet()) {
+                String component_id = c_bucket.getKey();
+
+                ArrayList<Integer> tmp;
+                if (ret.get(stream_id) != null && ret.get(stream_id).get(component_id)!= null) {
+                    tmp = ret.get(stream_id).get(component_id);
+                } else {
+                    LOG.info("Error when preform adjustDownstreamRatio method.");
+                    continue;
+                }
+
+                while(tmp.size() < 100) {
+                    tmp.add(null);
+                }
+
+                ArrayList<Integer> choice1 = new ArrayList<Integer>();
+                ArrayList<Integer> choice2 = new ArrayList<Integer>();
+
+                for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
+                    for(int j=0;j<20; j++) {
+                        choice1.add(entry.getKey());
+                        choice2.add(entry.getKey());
+                    }
+                }
+                Collections.shuffle(choice1, rand);
+                Collections.shuffle(choice2, rand);
+
+                for(int j=0; j<100; j++) {
+                    if(c_bucket.getValue().get(choice1.get(j)).get(0) <= c_bucket.getValue().get(choice2.get(j)).get(0)) {
+                        tmp.set(j, choice1.get(j));
+                    } else {
+                        tmp.set(j, choice2.get(j));
+                    }
+                }
+            }
+        }
+    }*/
+    
     public void adjustDownstreamRatio(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {
 
         for (Map.Entry<String, HashMap<String, HashMap<Integer, List<Double>>>> s_bucket : downstream_tasks_.entrySet()) {
@@ -110,7 +154,7 @@ public class IShuffleGAdjustmentMetric implements IMetric {
                    if((curr.get(1)<average_traffic && curr.get(0)<average_latency) || (curr.get(1)>average_traffic && curr.get(0)>average_latency)) {
                         term = Math.log1p(average_traffic/curr.get(1)) / Math.log(2);
                    }
-                   curr.set(0, curr.get(1) * 1/curr.get(0) * term);
+                   curr.set(0, curr.get(1) * term * Math.log1p(1/curr.get(0)));
                    
 
                    total += curr.get(0);
@@ -153,6 +197,7 @@ public class IShuffleGAdjustmentMetric implements IMetric {
             }
         }
     }
+    
 
     public Object getValueAndReset() {
         return null;
