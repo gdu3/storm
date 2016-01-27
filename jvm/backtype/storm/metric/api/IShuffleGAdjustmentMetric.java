@@ -72,6 +72,95 @@ public class IShuffleGAdjustmentMetric implements IMetric {
         }
     }
 
+    //AIAD
+    public void adjustDownstreamRatio(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {
+
+        for (Map.Entry<String, HashMap<String, HashMap<Integer, List<Double>>>> s_bucket : downstream_tasks_.entrySet()) {
+            String stream_id = s_bucket.getKey();
+            for (Map.Entry<String, HashMap<Integer, List<Double>>> c_bucket : s_bucket.getValue().entrySet()) {
+                String component_id = c_bucket.getKey();
+
+                ArrayList<Integer> tmp;
+                if (ret.get(stream_id) != null && ret.get(stream_id).get(component_id)!= null) {
+                    tmp = ret.get(stream_id).get(component_id);
+                } else {
+                    LOG.info("Error when preform adjustDownstreamRatio method.");
+                    continue;
+                }
+
+                if (tmp.size() < 100) {
+                    while(tmp.size() < 100) {
+                        tmp.add(null);
+                    }
+                    int num_of_tasks = c_bucket.getValue().size();
+                    int index = 0;
+                    
+                    for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
+                        for(int j=0; j<100/num_of_tasks; j++) {
+                            tmp.set(index++, entry.getKey());
+                        }
+                    }
+
+                    for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
+                        if(index<100) {
+                            tmp.set(index++, entry.getKey());
+                        } else {
+                            break;
+                        }
+                    }
+
+                    Collections.shuffle(tmp, rand);
+
+                } else {
+                    Map<Integer, Integer> cnt = new HashMap<Integer, Integer>();
+                    for(int i=0; i<100; i++) {
+                        if(cnt.containsKey(tmp.get(i))) {
+                            cnt.put(tmp.get(i), 1 + cnt.get(tmp.get(i)));
+                        } else {
+                            cnt.put(tmp.get(i), 1);
+                        }
+                    }
+
+                    boolean first = true;
+                    double max_latency = 0.0;
+                    double min_latency = 0.0;
+                    int max_task_id = 0;
+                    int min_task_id = 0;
+
+                    for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
+                        if (first) {
+                            first = false;
+                            max_latency = min_latency = entry.getValue().get(0);
+                            max_task_id = min_task_id = entry.getKey();
+                        } else {
+                            if(entry.getValue().get(0) > max_latency) {
+                                max_latency = entry.getValue().get(0);
+                                max_task_id = entry.getKey();
+                            }
+                            if(entry.getValue().get(0) < min_latency) {
+                                min_latency = entry.getValue().get(0);
+                                min_task_id = entry.getKey();
+                            }
+                        }
+                    }
+
+                    
+                    if(!cnt.get(max_task_id).equals(new Integer(1))) {
+                        cnt.put(max_task_id, cnt.get(max_task_id) - 1);
+                        cnt.put(min_task_id, cnt.get(min_task_id) + 1);
+                        int index = 0;
+                        for(Map.Entry<Integer, Integer> item : cnt.entrySet()) {
+                            for(int i=0; i<item.getValue(); i++) {
+                                tmp.set(index++, item.getKey());
+                            }
+                        }
+                    }
+
+                    Collections.shuffle(tmp, rand);
+                }
+            }
+        }
+    }
 
     /*
     public void adjustDownstreamRatio(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {
@@ -116,6 +205,7 @@ public class IShuffleGAdjustmentMetric implements IMetric {
         }
     }*/
     
+    /*
     public void adjustDownstreamRatio(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {
 
         for (Map.Entry<String, HashMap<String, HashMap<Integer, List<Double>>>> s_bucket : downstream_tasks_.entrySet()) {
@@ -196,7 +286,7 @@ public class IShuffleGAdjustmentMetric implements IMetric {
                 Collections.shuffle(tmp, rand);
             }
         }
-    }
+    }*/
     
 
     public Object getValueAndReset() {
