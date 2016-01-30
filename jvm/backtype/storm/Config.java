@@ -1463,15 +1463,27 @@ public class Config extends HashMap<String, Object> {
 
 
     public static final String I_SHUFFLE_GROUPING_ENABLE = "i.shuffle.grouping.enable";
-    public static final Object I_SHUFFLE_GROUPING_ENABLE_SCHEMA = Boolean.class;
+    public static final Object I_SHUFFLE_GROUPING_ENABLE_SCHEMA = ConfigValidation.IntegerValidator;
 
 
-    public static void setIShuffleGroupingEnable(Map conf, boolean isOn) {
-        conf.put(Config.I_SHUFFLE_GROUPING_ENABLE, isOn);
+    public static final String I_SHUFFLE_GROUPING_AGING_RATE="i.shuffle.grouping.aging.rate";
+    public static final Object I_SHUFFLE_GROUPING_AGING_RATE_SCHEMA =ConfigValidation.PositiveNumberValidator;
+
+
+    public static void setIShuffleGroupingEnable(Map conf, int mode) {
+        conf.put(Config.I_SHUFFLE_GROUPING_ENABLE, mode);
     }
 
-    public void setIShuffleGroupingEnable(boolean isOn) {
-        setIShuffleGroupingEnable(this, isOn);
+    public void setIShuffleGroupingEnable(int mode) {
+        setIShuffleGroupingEnable(this, mode);
+    }
+
+    public static void setIShuffleGroupingAgingRate(Map conf, double rate) {
+        conf.put(Config.I_SHUFFLE_GROUPING_AGING_RATE, rate);
+    }
+
+    public void setIShuffleGroupingAgingRate(double rate) {
+        setIShuffleGroupingAgingRate(this, rate);
     }
 
     public static void setBuiltInMetricSecs(Map conf, int secs) {

@@ -29,16 +29,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import backtype.storm.generated.Grouping;
 import java.lang.Math;
+import java.util.Comparator;
 
 
 public class IShuffleGAdjustmentMetric implements IMetric {
     public static final Logger LOG = LoggerFactory.getLogger(IShuffleGAdjustmentMetric.class);
-    public HashMap<String, HashMap<String, HashMap<Integer, List<Double>>>> downstream_tasks_;
+    public HashMap<String, HashMap<String, HashMap<Integer, List>>> downstream_tasks_;
     private Random rand;
 
     public IShuffleGAdjustmentMetric(Map<String, Map<String, Grouping>> targets, Map<String, List<Integer>> componentTosortedTasks) {
         rand = new Random(Utils.secureRandomLong());
-        downstream_tasks_ = new HashMap<String, HashMap<String, HashMap<Integer, List<Double>>>>();
+        downstream_tasks_ = new HashMap<String, HashMap<String, HashMap<Integer, List>>>();
 
         //Initialize downstream_tasks_
         for(Map.Entry<String, Map<String, Grouping>> s_bucket : targets.entrySet()) {
@@ -47,24 +48,34 @@ public class IShuffleGAdjustmentMetric implements IMetric {
                 if(c_bucket.getValue().is_set_shuffle()) {
 
                     String component_id = c_bucket.getKey();
-                    HashMap<String, HashMap<Integer, List<Double>>> s_bck = downstream_tasks_.get(stream_id);
+                    HashMap<String, HashMap<Integer, List>> s_bck = downstream_tasks_.get(stream_id);
                     if(s_bck == null) {
-                        s_bck = new HashMap<String, HashMap<Integer, List<Double>>>();
+                        s_bck = new HashMap<String, HashMap<Integer, List>>();
                         downstream_tasks_.put(stream_id, s_bck);
                     }
 
-                    HashMap<Integer, List<Double>> c_bck = new HashMap<Integer, List<Double>>();
+                    HashMap<Integer, List> c_bck = new HashMap<Integer, List>();
                     s_bck.put(component_id, c_bck);
 
                     List<Integer> ts = componentTosortedTasks.get(component_id);
                     if(ts == null) {
                         LOG.info("Error when construct a IShuffleGAdjustmentMetric object.");
                     } else {
+                        int base_amount = 100/ts.size();
+                        int mod = 100 % ts.size();
+                        int index = 0;
                         for(Integer task_id : ts) {
-                            ArrayList<Double> task_info = new ArrayList<Double>();
-                            task_info.add(new Double(1));
-                            task_info.add(new Double(1));
-                            c_bck.put(task_id, task_info);
+                            ArrayList tasks_info = new ArrayList();
+                            tasks_info.add(new Double(1));
+                            tasks_info.add(new Double(1));
+                            tasks_info.add(new Double(1)); // store aging latency
+                            // store amount of traffic it get, useful in AIAD
+                            if (index++ < mod) {
+                                tasks_info.add(new Integer(base_amount + 1));
+                            } else {
+                                tasks_info.add(new Integer(base_amount));
+                            }
+                            c_bck.put(task_id, tasks_info);
                         }
                     }
                 }
@@ -72,12 +83,51 @@ public class IShuffleGAdjustmentMetric implements IMetric {
         }
     }
 
-    //AIAD
-    public void adjustDownstreamRatio(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {
 
-        for (Map.Entry<String, HashMap<String, HashMap<Integer, List<Double>>>> s_bucket : downstream_tasks_.entrySet()) {
+    public void adjustDownstreamRatio(HashMap<String, HashMap<String, ArrayList<Integer>>> ret, int mode) {
+        if (mode == 0) {
+            // do nothing
+        } else if (mode == 1) {
+            AIAD(ret);
+        } else if (mode == 2) {
+            PowerOfTwoChoice(ret);
+        } else {
+
+        }
+    }
+
+    static public void AgingProcess(List tasks_info, double aging_rate) {
+        tasks_info.set(2, (Double)tasks_info.get(2)*(1-aging_rate)+(Double)tasks_info.get(0)*aging_rate);
+    }
+
+    private class Latency_info {
+        public Double latency;
+        public Integer task_id;
+
+        public Latency_info(Double l, Integer t_id) {
+            latency = l;
+            task_id = t_id;
+        }
+    }
+
+    private class LatencyComparator implements Comparator<Latency_info>{
+        public int compare(Latency_info a, Latency_info b) {
+            if (a.latency < b.latency) {
+                return -1;
+            } else if (a.latency > b.latency) {
+                return 1;
+            } else {
+                return 0;
+            }
+        }
+    }
+
+
+    private void AIAD(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {
+
+        for (Map.Entry<String, HashMap<String, HashMap<Integer, List>>> s_bucket : downstream_tasks_.entrySet()) {
             String stream_id = s_bucket.getKey();
-            for (Map.Entry<String, HashMap<Integer, List<Double>>> c_bucket : s_bucket.getValue().entrySet()) {
+            for (Map.Entry<String, HashMap<Integer, List>> c_bucket : s_bucket.getValue().entrySet()) {
                 String component_id = c_bucket.getKey();
 
                 ArrayList<Integer> tmp;
@@ -88,86 +138,48 @@ public class IShuffleGAdjustmentMetric implements IMetric {
                     continue;
                 }
 
-                if (tmp.size() < 100) {
-                    while(tmp.size() < 100) {
-                        tmp.add(null);
-                    }
-                    int num_of_tasks = c_bucket.getValue().size();
-                    int index = 0;
-                    
-                    for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
-                        for(int j=0; j<100/num_of_tasks; j++) {
-                            tmp.set(index++, entry.getKey());
-                        }
-                    }
-
-                    for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
-                        if(index<100) {
-                            tmp.set(index++, entry.getKey());
-                        } else {
-                            break;
-                        }
-                    }
-
-                    Collections.shuffle(tmp, rand);
-
-                } else {
-                    Map<Integer, Integer> cnt = new HashMap<Integer, Integer>();
-                    for(int i=0; i<100; i++) {
-                        if(cnt.containsKey(tmp.get(i))) {
-                            cnt.put(tmp.get(i), 1 + cnt.get(tmp.get(i)));
-                        } else {
-                            cnt.put(tmp.get(i), 1);
-                        }
-                    }
-
-                    boolean first = true;
-                    double max_latency = 0.0;
-                    double min_latency = 0.0;
-                    int max_task_id = 0;
-                    int min_task_id = 0;
-
-                    for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
-                        if (first) {
-                            first = false;
-                            max_latency = min_latency = entry.getValue().get(0);
-                            max_task_id = min_task_id = entry.getKey();
-                        } else {
-                            if(entry.getValue().get(0) > max_latency) {
-                                max_latency = entry.getValue().get(0);
-                                max_task_id = entry.getKey();
-                            }
-                            if(entry.getValue().get(0) < min_latency) {
-                                min_latency = entry.getValue().get(0);
-                                min_task_id = entry.getKey();
-                            }
-                        }
-                    }
-
-                    
-                    if(!cnt.get(max_task_id).equals(new Integer(1))) {
-                        cnt.put(max_task_id, cnt.get(max_task_id) - 1);
-                        cnt.put(min_task_id, cnt.get(min_task_id) + 1);
-                        int index = 0;
-                        for(Map.Entry<Integer, Integer> item : cnt.entrySet()) {
-                            for(int i=0; i<item.getValue(); i++) {
-                                tmp.set(index++, item.getKey());
-                            }
-                        }
-                    }
-
-                    Collections.shuffle(tmp, rand);
+                while(tmp.size() < 100) {
+                    tmp.add(null);
                 }
+
+                HashMap<Integer, List> tasks_info = c_bucket.getValue();
+
+                ArrayList<Latency_info> latency_info = new ArrayList<Latency_info>();
+                for (Map.Entry<Integer, List> task_info : tasks_info.entrySet()) {
+                    latency_info.add(new Latency_info((Double)task_info.getValue().get(2), task_info.getKey()));
+                }
+                Collections.sort(latency_info, new LatencyComparator());
+                
+                int size = latency_info.size();
+                for(int i=0; i<size/2; i++) {
+                    if (latency_info.get(i).latency * 1.2 < latency_info.get(size-1-i).latency) {
+                        if ((Integer)tasks_info.get(latency_info.get(size-1-i).task_id).get(3) > 1) {
+                            tasks_info.get(latency_info.get(size-1-i).task_id).set(3, (Integer)tasks_info.get(latency_info.get(size-1-i).task_id).get(3)-1);
+                            tasks_info.get(latency_info.get(i).task_id).set(3, (Integer)tasks_info.get(latency_info.get(i).task_id).get(3)+1);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                int index = 0;
+                for (Map.Entry<Integer, List> task_info : tasks_info.entrySet()) {
+                    for(int i=0; i<(Integer)task_info.getValue().get(3); i++) {
+                        tmp.set(index++, task_info.getKey());
+                    }
+                }
+
+                Collections.shuffle(tmp, rand);   
             }
         }
     }
 
-    /*
-    public void adjustDownstreamRatio(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {
+    
+    public void PowerOfTwoChoice(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {
 
-        for (Map.Entry<String, HashMap<String, HashMap<Integer, List<Double>>>> s_bucket : downstream_tasks_.entrySet()) {
+        for (Map.Entry<String, HashMap<String, HashMap<Integer, List>>> s_bucket : downstream_tasks_.entrySet()) {
             String stream_id = s_bucket.getKey();
-            for (Map.Entry<String, HashMap<Integer, List<Double>>> c_bucket : s_bucket.getValue().entrySet()) {
+            for (Map.Entry<String, HashMap<Integer, List>> c_bucket : s_bucket.getValue().entrySet()) {
                 String component_id = c_bucket.getKey();
 
                 ArrayList<Integer> tmp;
@@ -185,17 +197,21 @@ public class IShuffleGAdjustmentMetric implements IMetric {
                 ArrayList<Integer> choice1 = new ArrayList<Integer>();
                 ArrayList<Integer> choice2 = new ArrayList<Integer>();
 
-                for (Map.Entry<Integer, List<Double>> entry : c_bucket.getValue().entrySet()) {
-                    for(int j=0;j<20; j++) {
+                HashMap<Integer, List> tasks_info = c_bucket.getValue();
+
+                for (Map.Entry<Integer, List> entry : tasks_info.entrySet()) {
+                    for(int i=0; i<(Integer)entry.getValue().get(3); i++) {
                         choice1.add(entry.getKey());
                         choice2.add(entry.getKey());
                     }
                 }
+
                 Collections.shuffle(choice1, rand);
                 Collections.shuffle(choice2, rand);
 
-                for(int j=0; j<100; j++) {
-                    if(c_bucket.getValue().get(choice1.get(j)).get(0) <= c_bucket.getValue().get(choice2.get(j)).get(0)) {
+
+                for(int j=0; j<choice1.size(); j++) {
+                    if((Double)tasks_info.get(choice1.get(j)).get(2) <= (Double)tasks_info.get(choice2.get(j)).get(2)) {
                         tmp.set(j, choice1.get(j));
                     } else {
                         tmp.set(j, choice2.get(j));
@@ -203,7 +219,7 @@ public class IShuffleGAdjustmentMetric implements IMetric {
                 }
             }
         }
-    }*/
+    }
     
     /*
     public void adjustDownstreamRatio(HashMap<String, HashMap<String, ArrayList<Integer>>> ret) {

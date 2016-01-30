@@ -400,8 +400,8 @@
       (log-message "i-shuffle-grouping multicast disabled for executor " (:component-id executor-data) ":" (:executor-id executor-data))
       (schedule-recurring
           timer
-          120
-          1 ;;adjust every 1s, tentative
+          80
+          3 ;;adjust every 3s, tentative
           (fn []
             (disruptor/publish
               receive-queue
@@ -417,7 +417,7 @@
       (schedule-recurring
           timer
           120
-          2 ;;adjust every 2s, tentative
+          6 ;;adjust every 6s, tentative
           (fn []
             (disruptor/publish
               receive-queue
@@ -427,15 +427,20 @@
 (defn i-shuffle-grouping-reaction [executor-data task-data ^TupleImpl tuple overflow-buffer]
   (let [type (.getLong tuple 0)
         upstream-tasks (:upstream-tasks executor-data)
-        downstream-tasks (:downstream-tasks executor-data)]
+        downstream-tasks (:downstream-tasks executor-data)
+        storm-conf (:storm-conf executor-data)]
     (condp = type
       2 (let [gstream-id   (.getString tuple 1)
               component-id (.getString tuple 2)
               src-task-id  (.getInteger tuple 3)
               s-bucket (.get downstream-tasks gstream-id)
-              c-bucket (if (= nil s-bucket) nil (.get s-bucket component-id))]
+              c-bucket (if (= nil s-bucket) nil (.get s-bucket component-id))
+              aging-rate (storm-conf I-SHUFFLE-GROUPING-AGING-RATE)]
           (if (and (not= nil c-bucket) (.containsKey c-bucket src-task-id))
-            (.put c-bucket src-task-id (ArrayList. [(.getDouble tuple 4) (.getDouble tuple 5)]) )))
+            (let [task-info (.get c-bucket src-task-id)]
+              (.set task-info 0 (.getDouble tuple 4))
+              (.set task-info 1 (.getDouble tuple 5))
+              (builtin-metrics/aging-process task-info aging-rate))))
 
       1 (if (not= nil upstream-tasks) 
           (let [transfer-fn (:transfer-fn executor-data)
@@ -454,7 +459,8 @@
             ))
 
       3 (if (not= 0 (.size downstream-tasks))
-            (.adjustDownstreamRatio (:ishufflegrouping-metric executor-data) (:ishuffleg-lists executor-data)))
+          (let [mode (storm-conf I-SHUFFLE-GROUPING-ENABLE)] 
+                (.adjustDownstreamRatio (:ishufflegrouping-metric executor-data) (:ishuffleg-lists executor-data) mode)))
       nil)
     ))
 
@@ -553,9 +559,9 @@
       (fn [unit sequence-id end-of-batch?]
         (let [tuple-batch (unit 0)
               enqueue-time (unit 1)]
-          (.update recv-q-wait-time (- (System/currentTimeMillis) enqueue-time)) ;; record waiting time in queue
           (fast-list-iter [[task-id msg] tuple-batch]
             (let [^TupleImpl tuple (if (instance? Tuple msg) msg (.deserialize deserializer msg))]
+              (.update recv-q-wait-time (- (System/currentTimeMillis) enqueue-time)) ;; record waiting time in queue
               (when debug? (log-message "Processing received message FOR " task-id " TUPLE: " tuple))
               (if task-id
                 (tuple-action-fn task-id tuple)
@@ -703,8 +709,9 @@
         (reset! open-or-prepare-was-called? true) 
         (log-message "Opened spout " component-id ":" (keys task-datas))
         (setup-metrics! executor-data)
-        (if (= true (storm-conf I-SHUFFLE-GROUPING-ENABLE) )
-          (setup-i-s-grouping-aggregate-tick! (:worker executor-data) executor-data))
+        ;;(if (= true (storm-conf I-SHUFFLE-GROUPING-ENABLE) )
+        ;;  (setup-i-s-grouping-aggregate-tick! (:worker executor-data) executor-data))
+        (setup-i-s-grouping-aggregate-tick! (:worker executor-data) executor-data)
         
         (disruptor/consumer-started! (:receive-queue executor-data))
         (fn []
@@ -941,8 +948,9 @@
         (log-message "Prepared bolt " component-id ":" (keys task-datas))
         (setup-metrics! executor-data)
         (setup-i-s-grouping-multicast-tick! (:worker executor-data) executor-data)
-        (if (= true (storm-conf I-SHUFFLE-GROUPING-ENABLE) )
-          (setup-i-s-grouping-aggregate-tick! (:worker executor-data) executor-data))
+        ;;(if (= true (storm-conf I-SHUFFLE-GROUPING-ENABLE) )
+        ;;  (setup-i-s-grouping-aggregate-tick! (:worker executor-data) executor-data))
+        (setup-i-s-grouping-aggregate-tick! (:worker executor-data) executor-data)
 
         (let [receive-queue (:receive-queue executor-data)
               event-handler (mk-task-receiver executor-data tuple-action-fn)]

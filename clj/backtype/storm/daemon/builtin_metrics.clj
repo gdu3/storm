@@ -52,6 +52,9 @@
 (defn make-send-q-wait-time [round]
   (QueueWaitTimeMetric. round))
 
+(defn aging-process [task-info aging-rate]
+  (IShuffleGAdjustmentMetric/AgingProcess task-info aging-rate))
+
 (defn make-ishufflegrouping-metric [targets componentTosortedTasks]
   (IShuffleGAdjustmentMetric. targets componentTosortedTasks))
 
