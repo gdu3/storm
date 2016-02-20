@@ -94,6 +94,15 @@
     (locking (:lock timer)
       (.add queue [(+ (current-time-millis) (secs-to-millis-long delay-secs)) afn id]))))
 
+(defnk schedule-milli
+  [timer delay-milli afn :check-active true]
+  (when check-active (check-active! timer))
+  (let [id (uuid)
+        ^PriorityQueue queue (:queue timer)]
+    (locking (:lock timer)
+      (.add queue [(+ (current-time-millis) delay-milli) afn id]))))
+
+
 (defn schedule-recurring
   [timer delay-secs recur-secs afn]
   (schedule timer
@@ -102,6 +111,15 @@
               (afn)
               ; This avoids a race condition with cancel-timer.
               (schedule timer recur-secs this :check-active false))))
+
+(defn schedule-recurring-aperiodic
+  [timer delay-secs timeout-adjustment afn]
+  (schedule timer
+            delay-secs
+            (fn this []
+              (afn)
+              ; This avoids a race condition with cancel-timer.
+              (schedule-milli timer (.getTimeoutValue timeout-adjustment) this :check-active false))))
 
 (defn cancel-timer
   [timer]

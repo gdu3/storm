@@ -18,7 +18,7 @@
   (:import [backtype.storm.generated Grouping]
            [java.io Serializable])
   (:use [backtype.storm util config log timer stats])
-  (:import [java.util List Random HashMap ArrayList LinkedList Map])
+  (:import [java.util List Random HashMap ArrayList LinkedList Map HashSet Set])
   (:import [backtype.storm ICredentialsListener])
   (:import [backtype.storm.hooks ITaskHook])
   (:import [backtype.storm.tuple Tuple Fields TupleImpl MessageId])
@@ -260,6 +260,7 @@
                                (log-message "Got interrupted excpetion shutting thread down...")
                                ((:suicide-fn <>))))
      :deserializer (KryoTupleDeserializer. storm-conf worker-context)
+     :timeout-adjustment (builtin-metrics/make-timeout-adjustment-metric executor-type storm-conf)
      :sampler (mk-stats-sampler storm-conf)
      :recv-q-delay (builtin-metrics/make-q-delay-metric executor-type component-id (.toString executor-id))
      ;; TODO: add in the executor-specific stuff in a :specific... or make a spout-data, bolt-data function?
@@ -281,6 +282,15 @@
             (.setObject cached-emit (ArrayList.))
             )))
       :kill-fn (:report-error-and-die executor-data))))
+
+(defn start-timeout-adjustment! [executor-data]
+  (let [timeout-adjustment (:timeout-adjustment executor-data)]
+    (schedule
+      (:user-timer (:worker executor-data))
+      120 ;; after 2 minute, adjustment algorithm starts
+      (fn []
+       (.setEnable timeout-adjustment)))
+    ))
 
 (defn setup-metrics! [executor-data]
   (let [{:keys [storm-conf receive-queue worker-context interval->task->metric-registry]} executor-data
@@ -332,15 +342,16 @@
               (and (= false (storm-conf TOPOLOGY-ENABLE-MESSAGE-TIMEOUTS))
                    (= :spout (:type executor-data))))
         (log-message "Timeouts disabled for executor " (:component-id executor-data) ":" (:executor-id executor-data))
-        (schedule-recurring
+        (if (= :spout (:type executor-data))
+        (schedule-recurring-aperiodic
           (:user-timer worker)
           tick-time-secs
-          tick-time-secs
+          (:timeout-adjustment executor-data)
           (fn []
             (disruptor/publish
               receive-queue
               [[[nil (TupleImpl. context [tick-time-secs] Constants/SYSTEM_TASK_ID Constants/SYSTEM_TICK_STREAM_ID)]] (System/currentTimeMillis)]
-              )))))))
+              ))))))))
 
 (defn mk-executor [worker executor-id initial-credentials]
   (let [executor-data (mk-executor-data worker executor-id)
@@ -416,7 +427,8 @@
 (defn- ack-spout-msg [executor-data task-data msg-id tuple-info time-delta id start-time-ms]
   (let [storm-conf (:storm-conf executor-data)
         ^ISpout spout (:object task-data)
-        task-id (:task-id task-data)]
+        task-id (:task-id task-data)
+        timeout-adjustment (:timeout-adjustment executor-data)]
     (when true
     ;;(when (= true (storm-conf TOPOLOGY-DEBUG))
       ;;(log-message "SPOUT Acking message " id " " msg-id))
@@ -425,7 +437,11 @@
     (task/apply-hooks (:user-context task-data) .spoutAck (SpoutAckInfo. msg-id task-id time-delta))
     (when time-delta
       (builtin-metrics/spout-acked-tuple! (:builtin-metrics task-data) (:stats executor-data) (:stream tuple-info) time-delta)
-      (stats/spout-acked-tuple! (:stats executor-data) (:stream tuple-info) time-delta))))
+      (stats/spout-acked-tuple! (:stats executor-data) (:stream tuple-info) time-delta)
+      (if (= true (.UpAck timeout-adjustment (int time-delta)))
+        (log-message "TimeoutV: " (.getTimeoutValue timeout-adjustment) " " (System/currentTimeMillis)))
+      )
+    ))
 
 (defn mk-task-receiver [executor-data tuple-action-fn]
   (let [^KryoTupleDeserializer deserializer (:deserializer executor-data)
@@ -476,6 +492,8 @@
         ;; this limits the size of the overflow buffer to however many tuples a spout emits in one call of nextTuple, 
         ;; preventing memory issues
         overflow-buffer (ConcurrentLinkedQueue.)
+        replay-buffer (LinkedList.)
+        replay-tracking (HashSet.)
 
         pending (RotatingMap.
                  2 ;; microoptimize for performance of .size method
@@ -487,7 +505,16 @@
         tuple-action-fn (fn [task-id ^TupleImpl tuple]
                           (let [stream-id (.getSourceStreamId tuple)]
                             (condp = stream-id
-                              Constants/SYSTEM_TICK_STREAM_ID (.rotate pending)
+                              Constants/SYSTEM_TICK_STREAM_ID
+                              (if (= true (storm-conf TOPOLOGY-ENABLE-TIMEOUT-ADJUSTMENT))
+                                (let [replay (.rotate_to_head pending)]
+                                  (fast-map-iter [[r-id values] replay]
+                                      (if (.contains replay-tracking (values 1))
+                                        (do
+                                          (.add replay-buffer values)
+                                          (.remove replay-tracking (values 1)))))
+                                  )
+                                (.rotate pending))
                               Constants/METRICS_TICK_STREAM_ID (metrics-tick executor-data (get task-datas task-id) tuple overflow-buffer)
                               Constants/CREDENTIALS_CHANGED_STREAM_ID 
                                 (let [task-data (get task-datas task-id)
@@ -501,8 +528,11 @@
                                     (throw-runtime "Fatal error, mismatched task ids: " task-id " " stored-task-id))
                                   (let [time-delta (if start-time-ms (time-delta-ms start-time-ms))]
                                     (condp = stream-id
-                                      ACKER-ACK-STREAM-ID (ack-spout-msg executor-data (get task-datas task-id)
-                                                                         spout-id tuple-finished-info time-delta id start-time-ms)
+                                      ACKER-ACK-STREAM-ID
+                                      (do
+                                        (.remove replay-tracking spout-id)
+                                        (ack-spout-msg executor-data (get task-datas task-id)
+                                                                         spout-id tuple-finished-info time-delta id start-time-ms))
                                       ACKER-FAIL-STREAM-ID (fail-spout-msg executor-data (get task-datas task-id)
                                                                            spout-id tuple-finished-info time-delta "FAIL-STREAM" id start-time-ms)
                                       )))
@@ -548,6 +578,7 @@
                                          (if (and rooted?
                                                   (not (.isEmpty out-ids)))
                                            (do
+                                             (.add replay-tracking message-id)
                                              (.put pending root-id [task-id
                                                                     message-id
                                                                     {:stream out-stream-id :values values}
@@ -586,11 +617,61 @@
         (reset! open-or-prepare-was-called? true) 
         (log-message "Opened spout " component-id ":" (keys task-datas))
         (setup-metrics! executor-data)
+        (if (= true (storm-conf TOPOLOGY-ENABLE-TIMEOUT-ADJUSTMENT))
+          (start-timeout-adjustment! executor-data))
         
         (disruptor/consumer-started! (:receive-queue executor-data))
+        (let [replay-fn (fn [task-id task-data tasks-fn out-stream-id values message-id out-task-id]
+                                       (.increment emitted-count)
+                                       (let [out-tasks (if out-task-id
+                                                         (tasks-fn out-task-id out-stream-id values)
+                                                         (tasks-fn out-stream-id values))
+                                             rooted? (and message-id has-ackers?)
+                                             root-id (if rooted? (MessageId/generateId rand))
+                                             out-ids (fast-list-for [t out-tasks] (if rooted? (MessageId/generateId rand)))]
+                                         (fast-list-iter [out-task out-tasks id out-ids]
+                                                         (let [tuple-id (if rooted?
+                                                                          (MessageId/makeRootId root-id id)
+                                                                          (MessageId/makeUnanchored))
+                                                               out-tuple (TupleImpl. worker-context
+                                                                                     values
+                                                                                     task-id
+                                                                                     out-stream-id
+                                                                                     tuple-id)]
+                                                           (transfer-fn out-task
+                                                                        out-tuple
+                                                                        overflow-buffer)
+                                                           ))
+                                         (if (and rooted?
+                                                  (not (.isEmpty out-ids)))
+                                           (do
+                                             (.put pending root-id [task-id
+                                                                    message-id
+                                                                    {:stream out-stream-id :values values}
+                                                                    (if (sampler) (System/currentTimeMillis))])
+                                             (task/send-unanchored task-data
+                                                                   ACKER-INIT-STREAM-ID
+                                                                   [root-id (bit-xor-vals out-ids) task-id]
+                                                                   overflow-buffer))
+                                           (when message-id
+                                             (ack-spout-msg executor-data task-data message-id
+                                                            {:stream out-stream-id :values values}
+                                                            (if (sampler) 0) "0:" -1)))
+                                         (or out-tasks [])
+                                         ))]
         (fn []
           ;; This design requires that spouts be non-blocking
           (disruptor/consume-batch receive-queue event-handler)
+
+          ;;try to clear the replay-buffer
+          ;;currently do not support automatic direct stream replay
+          (try-cause
+            (while (not (.isEmpty replay-buffer))
+              (let [[task-id msg-id tuple-info start-time-ms] (.poll replay-buffer)]
+                (replay-fn task-id (get task-datas task-id) (:tasks-fn (get task-datas task-id)) (:stream tuple-info) (:values tuple-info) msg-id nil)
+                ))
+          (catch InsufficientCapacityException e
+            ))
           
           ;; try to clear the overflow-buffer
           (try-cause
@@ -626,7 +707,7 @@
                   (.emptyEmit spout-wait-strategy (.get empty-emit-streak)))
               (.set empty-emit-streak 0)
               ))           
-          0))
+          0)))
       :kill-fn (:report-error-and-die executor-data)
       :factory? true
       :thread-name component-id)]))

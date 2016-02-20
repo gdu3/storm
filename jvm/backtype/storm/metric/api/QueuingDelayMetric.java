@@ -38,7 +38,7 @@ public class QueuingDelayMetric implements IMetric {
         sum += queuing_delay;
         cnt++;
 
-        if(cnt==500) {
+        if(cnt==1500) {
             Object val = getValueAndReset();
             LOG.info("RecvQDelay: " + val + " " + System.currentTimeMillis() + " " + name);
         }

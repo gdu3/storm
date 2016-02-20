@@ -76,6 +76,18 @@ public class RotatingMap<K, V> {
         return dead;
     }
 
+    public Map<K, V> rotate_to_head() {
+        Map<K, V> dead = _buckets.removeLast();
+        _buckets.addFirst((HashMap<K, V>)dead);
+        /*
+        if(_callback!=null) {
+            for(Entry<K, V> entry: dead.entrySet()) {
+                _callback.expire(entry.getKey(), entry.getValue());
+            }
+        }*/
+        return dead;
+    }
+
     public boolean containsKey(K key) {
         for(HashMap<K, V> bucket: _buckets) {
             if(bucket.containsKey(key)) {

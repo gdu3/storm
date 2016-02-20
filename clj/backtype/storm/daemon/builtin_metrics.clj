@@ -14,7 +14,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (ns backtype.storm.daemon.builtin-metrics
-  (:import [backtype.storm.metric.api MultiCountMetric MultiReducedMetric MeanReducer StateMetric IMetric IStatefulObject QueuingDelayMetric])
+  (:import [backtype.storm.metric.api MultiCountMetric MultiReducedMetric MeanReducer StateMetric IMetric IStatefulObject QueuingDelayMetric TimeoutAdjustmentMetric])
   (:import [backtype.storm Config Constants])
   (:use [backtype.storm.daemon common])
   (:use [backtype.storm.stats :only [stats-rate]]))
@@ -51,6 +51,12 @@
   (if (or (= executor-type :spout) (system-id? component-id))
     nil
     (QueuingDelayMetric. executor-id)))
+
+(defn make-timeout-adjustment-metric [executor-type storm-conf]
+  (condp = executor-type
+    :spout (TimeoutAdjustmentMetric. (storm-conf Config/TOPOLOGY_MESSAGE_TIMEOUT_SECS))
+    :bolt nil
+    ))
 
 (defn register-all [builtin-metrics  storm-conf topology-context]
   (doseq [[kw imetric] builtin-metrics]
