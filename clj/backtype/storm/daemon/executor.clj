@@ -28,7 +28,7 @@
   (:import [backtype.storm.grouping CustomStreamGrouping])
   (:import [backtype.storm.task WorkerTopologyContext IBolt OutputCollector IOutputCollector])
   (:import [backtype.storm.generated GlobalStreamId])
-  (:import [backtype.storm.utils Utils MutableObject RotatingMap RotatingMap$ExpiredCallback MutableLong Time])
+  (:import [backtype.storm.utils Utils MutableObject RotatingMap RotatingMap$ExpiredCallback MutableLong Time MutableInt])
   (:import [com.lmax.disruptor InsufficientCapacityException])
   (:import [backtype.storm.serialization KryoTupleSerializer KryoTupleDeserializer])
   (:import [backtype.storm.daemon Shutdownable])
@@ -55,6 +55,12 @@
     (fn [task-id tuple]
       (acquire-random-range-id choices))))
 
+(defn- mk-i-shuffle-grouper [^List ishuffle-list]
+  (let [rand (Random.)
+        curr (MutableInt. -1)]
+  (fn [task-id tuple]
+    (acquire-random-range-id [curr ishuffle-list rand]))))
+
 (defn- mk-custom-grouper [^CustomStreamGrouping grouping ^WorkerTopologyContext context ^String component-id ^String stream-id target-tasks]
   (.prepare grouping context (GlobalStreamId. component-id stream-id) target-tasks)
   (fn [task-id ^List values]
@@ -63,7 +69,7 @@
 
 (defn- mk-grouper
   "Returns a function that returns a vector of which task indices to send tuple to, or just a single task index."
-  [^WorkerTopologyContext context component-id stream-id ^Fields out-fields thrift-grouping ^List target-tasks]
+  [^WorkerTopologyContext context component-id stream-id ^Fields out-fields thrift-grouping ^List target-tasks ishuffleg-lists downstream-component-id]
   (let [num-tasks (count target-tasks)
         random (Random.)
         target-tasks (vec (sort target-tasks))]
@@ -79,7 +85,8 @@
       :all
         (fn [task-id tuple] target-tasks)
       :shuffle
-        (mk-shuffle-grouper target-tasks)
+        (mk-i-shuffle-grouper (.get (.get ishuffleg-lists stream-id) downstream-component-id))
+        ;;(mk-shuffle-grouper target-tasks)
       :local-or-shuffle
         (let [same-tasks (set/intersection
                            (set target-tasks)
@@ -102,7 +109,7 @@
         :direct
       )))
 
-(defn- outbound-groupings [^WorkerTopologyContext worker-context this-component-id stream-id out-fields component->grouping]
+(defn- outbound-groupings [^WorkerTopologyContext worker-context this-component-id stream-id out-fields component->grouping ishuffleg-lists]
   (->> component->grouping
        (filter-key #(-> worker-context
                         (.getComponentTasks %)
@@ -116,13 +123,14 @@
                             out-fields
                             tgrouping
                             (.getComponentTasks worker-context component)
-                            )]))
+                            ishuffleg-lists
+                            component)]))
        (into {})
        (HashMap.)))
 
 (defn outbound-components
   "Returns map of stream id to component id to grouper"
-  [^WorkerTopologyContext worker-context component-id]
+  [^WorkerTopologyContext worker-context component-id ishuffleg-lists]
   (->> (.getTargets worker-context component-id)
         clojurify-structure
         (map (fn [[stream-id component->grouping]]
@@ -132,7 +140,31 @@
                   component-id
                   stream-id
                   (.getComponentOutputFields worker-context component-id stream-id)
-                  component->grouping)]))
+                  component->grouping
+                  ishuffleg-lists)]))
+         (into {})
+         (HashMap.)))
+
+(defn- ishuffleg-lists-assist [^WorkerTopologyContext worker-context component->grouping]
+  (->> component->grouping
+       (filter-key #(-> worker-context
+                        (.getComponentTasks %)
+                        count
+                        pos?))
+       (map (fn [[component tgrouping]]
+               [component
+                (ArrayList. (.getComponentTasks worker-context component))]))
+       (into {})
+       (HashMap.)))
+
+(defn ishuffleg-lists
+  "Returns map of stream id to component id i-shuffle-grouping-list"
+  [^WorkerTopologyContext worker-context component-id]
+  (->> (.getTargets worker-context component-id)
+        clojurify-structure
+        (map (fn [[stream-id component->grouping]]
+               [stream-id
+                (ishuffleg-lists-assist worker-context component->grouping)]))
          (into {})
          (HashMap.)))
 
@@ -226,6 +258,7 @@
                                   (storm-conf TOPOLOGY-DISRUPTOR-WAIT-TIMEOUT-MILLIS)
                                   :claim-strategy :single-threaded
                                   :wait-strategy (storm-conf TOPOLOGY-DISRUPTOR-WAIT-STRATEGY))
+        ishuffleg-lists (ishuffleg-lists worker-context component-id)
         ]
     (recursive-map
      :worker worker
@@ -250,7 +283,7 @@
      :stats (mk-executor-stats <> (sampling-rate storm-conf))
      :interval->task->metric-registry (HashMap.)
      :task->component (:task->component worker)
-     :stream->component->grouper (outbound-components worker-context component-id)
+     :stream->component->grouper (outbound-components worker-context component-id ishuffleg-lists)
      :report-error (throttled-report-error-fn <>)
      :report-error-and-die (fn [error]
                              ((:report-error <>) error)
@@ -263,6 +296,22 @@
      :timeout-adjustment (builtin-metrics/make-timeout-adjustment-metric executor-type storm-conf)
      :sampler (mk-stats-sampler storm-conf)
      :recv-q-delay (builtin-metrics/make-q-delay-metric executor-type component-id (.toString executor-id))
+     :recv-q-wait-time (builtin-metrics/make-executor-recv-q-wait-time)
+     :ishuffleg-lists ishuffleg-lists
+     :ishufflegrouping-metric (builtin-metrics/make-ishufflegrouping-metric (.getTargets worker-context component-id) (:component->sorted-tasks worker))
+     :upstream-tasks (if (= :spout executor-type) 
+                        nil
+                        (let [ret (HashMap.)]
+                          (fast-map-iter [[gstread-id grouping] (.getSources worker-context component-id)]
+                            (if (.is_set_shuffle grouping)
+                              (let [tasks ((:component->sorted-tasks worker) (.get_componentId gstread-id))
+                                    s-bucket (get-with-default ret (.get_streamId gstread-id) (HashMap.))
+                                    c-bucket (get-with-default s-bucket (.get_componentId gstread-id) (ArrayList.))]
+                                (fast-list-iter [task tasks]
+                                  (.add c-bucket task))))
+                          )
+                          ret))
+    :downstream-tasks (.downstream_tasks_ (:ishufflegrouping-metric <>))
      ;; TODO: add in the executor-specific stuff in a :specific... or make a spout-data, bolt-data function?
      )))
 
@@ -352,6 +401,79 @@
               receive-queue
               [[[nil (TupleImpl. context [tick-time-secs] Constants/SYSTEM_TASK_ID Constants/SYSTEM_TICK_STREAM_ID)]] (System/currentTimeMillis)]
               ))))))))
+
+(defn setup-i-s-grouping-multicast-tick! [worker executor-data]
+  (let [receive-queue (:receive-queue executor-data)
+        context (:worker-context executor-data)
+        timer (:user-timer worker)]
+    (if (system-id? (:component-id executor-data))
+      (log-message "i-shuffle-grouping multicast disabled for executor " (:component-id executor-data) ":" (:executor-id executor-data))
+      (schedule-recurring
+          timer
+          80
+          3 ;;adjust every 3s, tentative
+          (fn []
+            (disruptor/publish
+              receive-queue
+              [[[nil (TupleImpl. context [1] Constants/SYSTEM_TASK_ID Constants/I_SHUFFLE_GROUPING_INFO_STREAM_ID)]] (System/currentTimeMillis)]
+            ))))))
+
+(defn setup-i-s-grouping-aggregate-tick! [worker executor-data]
+  (let [receive-queue (:receive-queue executor-data)
+        context (:worker-context executor-data)
+        timer (:user-timer worker)]
+    (if (system-id? (:component-id executor-data))
+      (log-message "i-shuffle-grouping aggregate disabled for executor " (:component-id executor-data) ":" (:executor-id executor-data))
+      (schedule-recurring
+          timer
+          120
+          6 ;;adjust every 6s, tentative
+          (fn []
+            (disruptor/publish
+              receive-queue
+              [[[nil (TupleImpl. context [3] Constants/SYSTEM_TASK_ID Constants/I_SHUFFLE_GROUPING_INFO_STREAM_ID)]] (System/currentTimeMillis)]
+            ))))))
+
+(defn i-shuffle-grouping-reaction [executor-data task-data ^TupleImpl tuple overflow-buffer]
+  (let [type (.getLong tuple 0)
+        upstream-tasks (:upstream-tasks executor-data)
+        downstream-tasks (:downstream-tasks executor-data)
+        storm-conf (:storm-conf executor-data)]
+    (condp = type
+      2 (let [gstream-id   (.getString tuple 1)
+              component-id (.getString tuple 2)
+              src-task-id  (.getInteger tuple 3)
+              s-bucket (.get downstream-tasks gstream-id)
+              c-bucket (if (= nil s-bucket) nil (.get s-bucket component-id))
+              aging-rate (storm-conf I-SHUFFLE-GROUPING-AGING-RATE)]
+          (if (and (not= nil c-bucket) (.containsKey c-bucket src-task-id))
+            (let [task-info (.get c-bucket src-task-id)]
+              (.set task-info 0 (.getDouble tuple 4))
+              (.set task-info 1 (.getDouble tuple 5))
+              (builtin-metrics/aging-process task-info aging-rate))))
+
+      1 (if (not= nil upstream-tasks) 
+          (let [transfer-fn (:transfer-fn executor-data)
+                context (:worker-context executor-data)
+                execute-count (reduce + (vals (.getValueAndReset (.execute-count (:builtin-metrics task-data)))))
+                average-wait-time (-> (defaulted (.getValueAndReset (:recv-q-wait-time executor-data)) 0)
+                                      (+ (average (vals (.getValueAndReset (.execute-latency (:builtin-metrics task-data)))))))]
+            (log-message "IshuffleInfo " (:component-id executor-data) " " execute-count " " average-wait-time " " (System/currentTimeMillis))
+
+            (fast-map-iter [[gstream-id component->tasks] upstream-tasks]
+              (fast-map-iter [[component tasks] component->tasks]
+                (fast-list-iter [upstream-tid tasks]
+                  (transfer-fn upstream-tid
+                        (TupleImpl. context [2 gstream-id (:component-id executor-data) (:task-id task-data) average-wait-time (double execute-count)] (:task-id task-data) Constants/I_SHUFFLE_GROUPING_INFO_STREAM_ID)
+                          overflow-buffer))))
+            ))
+
+      3 (if (not= 0 (.size downstream-tasks))
+          (let [mode (storm-conf I-SHUFFLE-GROUPING-ENABLE)] 
+                (.adjustDownstreamRatio (:ishufflegrouping-metric executor-data) (:ishuffleg-lists executor-data) mode)))
+      nil)
+    ))
+
 
 (defn mk-executor [worker executor-id initial-credentials]
   (let [executor-data (mk-executor-data worker executor-id)
@@ -448,6 +570,7 @@
         task-ids (:task-ids executor-data)
         debug? (= true (-> executor-data :storm-conf (get TOPOLOGY-DEBUG)))
         recv-q-delay (:recv-q-delay executor-data)
+        recv-q-wait-time (:recv-q-wait-time executor-data)
         ]
     (disruptor/clojure-handler
       (fn [unit sequence-id end-of-batch?]
@@ -456,7 +579,9 @@
           (fast-list-iter [[task-id msg] tuple-batch]
             (let [^TupleImpl tuple (if (instance? Tuple msg) msg (.deserialize deserializer msg))]
               (when debug? (log-message "Processing received message FOR " task-id " TUPLE: " tuple))
-              (if (not= nil recv-q-delay) (.update recv-q-delay (- (System/currentTimeMillis) enqueue-time)))
+              (let [delta (- (System/currentTimeMillis) enqueue-time)]
+                (if (not= nil recv-q-delay) (.update recv-q-delay delta))
+                (.update recv-q-wait-time delta))
               (if task-id
                 (tuple-action-fn task-id tuple)
                 ;; null task ids are broadcast tuples
@@ -521,6 +646,7 @@
                                       spout-obj (:object task-data)]
                                   (when (instance? ICredentialsListener spout-obj)
                                     (.setCredentials spout-obj (.getValue tuple 0))))
+                              Constants/I_SHUFFLE_GROUPING_INFO_STREAM_ID (i-shuffle-grouping-reaction executor-data (get task-datas task-id) tuple overflow-buffer)
                               (let [id (.getValue tuple 0)
                                     [stored-task-id spout-id tuple-finished-info start-time-ms] (.remove pending id)]
                                 (when spout-id
@@ -617,8 +743,10 @@
         (reset! open-or-prepare-was-called? true) 
         (log-message "Opened spout " component-id ":" (keys task-datas))
         (setup-metrics! executor-data)
+        (setup-i-s-grouping-aggregate-tick! (:worker executor-data) executor-data)
         (if (= true (storm-conf TOPOLOGY-ENABLE-TIMEOUT-ADJUSTMENT))
           (start-timeout-adjustment! executor-data))
+
         
         (disruptor/consumer-started! (:receive-queue executor-data))
         (let [replay-fn (fn [task-id task-data tasks-fn out-stream-id values message-id out-task-id]
@@ -770,6 +898,7 @@
                                   (when (instance? ICredentialsListener bolt-obj)
                                     (.setCredentials bolt-obj (.getValue tuple 0))))
                               Constants/METRICS_TICK_STREAM_ID (metrics-tick executor-data (get task-datas task-id) tuple overflow-buffer)
+                              Constants/I_SHUFFLE_GROUPING_INFO_STREAM_ID (i-shuffle-grouping-reaction executor-data (get task-datas task-id) tuple overflow-buffer)
                               (let [task-data (if (storm-conf TOPOLOGY-IMPROVED-CONCURRENCY-MODEL)
                                                     (defaulted (get task-datas task-id) first-task-data)
                                                     (get task-datas task-id))
@@ -906,6 +1035,8 @@
         (reset! open-or-prepare-was-called? true)        
         (log-message "Prepared bolt " component-id ":" (keys task-datas))
         ;;(setup-metrics! executor-data)
+        (setup-i-s-grouping-multicast-tick! (:worker executor-data) executor-data)
+        (setup-i-s-grouping-aggregate-tick! (:worker executor-data) executor-data)
 
         (let [receive-queue (:receive-queue executor-data)
               event-handler (mk-task-receiver executor-data tuple-action-fn)

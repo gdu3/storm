@@ -34,6 +34,7 @@
   (:import [backtype.storm.security.auth AuthUtils])
   (:import [javax.security.auth Subject])
   (:import [java.security PrivilegedExceptionAction])
+  (:require [backtype.storm.daemon.builtin-metrics :as builtin-metrics])
   (:import [java.util.concurrent ArrayBlockingQueue])
   (:gen-class))
 

@@ -43,6 +43,7 @@
 (def METRICS-STREAM-ID Constants/METRICS_STREAM_ID)
 (def METRICS-TICK-STREAM-ID Constants/METRICS_TICK_STREAM_ID)
 (def CREDENTIALS-CHANGED-STREAM-ID Constants/CREDENTIALS_CHANGED_STREAM_ID)
+(def I-SHUFFLE-GROUPING-INFO-STREAM-ID Constants/I_SHUFFLE_GROUPING_INFO_STREAM_ID)
 
 ;; the task id is the virtual port
 ;; node->host is here so that tasks know who to talk to just from assignment
@@ -228,6 +229,10 @@
           :let [common (.get_common component)]]
     (.put_to_streams common SYSTEM-STREAM-ID (thrift/output-fields ["event"]))))
 
+(defn add-i-shuffle-grouping-stream! [^StormTopology topology]
+  (doseq [[_ component] (all-components topology)
+          :let [common (.get_common component)]]
+    (.put_to_streams common I-SHUFFLE-GROUPING-INFO-STREAM-ID (thrift/output-fields ["type" "gstream-id" "component-id" "src-task-id" "wait-time" "execute-count"]))))
 
 (defn map-occurrences [afn coll]
   (->> coll
@@ -283,7 +288,8 @@
                           (SystemBolt.)
                           {SYSTEM-TICK-STREAM-ID (thrift/output-fields ["rate_secs"])
                            METRICS-TICK-STREAM-ID (thrift/output-fields ["interval"])
-                           CREDENTIALS-CHANGED-STREAM-ID (thrift/output-fields ["creds"])}
+                           CREDENTIALS-CHANGED-STREAM-ID (thrift/output-fields ["creds"])
+                           I-SHUFFLE-GROUPING-INFO-STREAM-ID (thrift/output-fields ["type"])}
                           :p 0
                           :conf {TOPOLOGY-TASKS 0})]
     (.put_to_bolts topology SYSTEM-COMPONENT-ID system-bolt-spec)))
@@ -291,6 +297,7 @@
 (defn system-topology! [storm-conf ^StormTopology topology]
   (validate-basic! topology)
   (let [ret (.deepCopy topology)]
+    (add-i-shuffle-grouping-stream! ret)
     (add-acker! storm-conf ret)
     (add-metric-components! storm-conf ret)    
     (add-system-components! storm-conf ret)

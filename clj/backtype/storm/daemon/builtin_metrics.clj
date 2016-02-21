@@ -14,7 +14,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (ns backtype.storm.daemon.builtin-metrics
-  (:import [backtype.storm.metric.api MultiCountMetric MultiReducedMetric MeanReducer StateMetric IMetric IStatefulObject QueuingDelayMetric TimeoutAdjustmentMetric])
+  (:import [backtype.storm.metric.api MultiCountMetric MultiReducedMetric ReducedMetric MeanReducer StateMetric IMetric IStatefulObject QueuingDelayMetric TimeoutAdjustmentMetric IShuffleGAdjustmentMetric])
   (:import [backtype.storm Config Constants])
   (:use [backtype.storm.daemon common])
   (:use [backtype.storm.stats :only [stats-rate]]))
@@ -58,10 +58,21 @@
     :bolt nil
     ))
 
+(defn make-executor-recv-q-wait-time []
+  (ReducedMetric. (MeanReducer.)))
+
+(defn aging-process [task-info aging-rate]
+  (IShuffleGAdjustmentMetric/AgingProcess task-info aging-rate))
+
+(defn make-ishufflegrouping-metric [targets componentTosortedTasks]
+  (IShuffleGAdjustmentMetric. targets componentTosortedTasks))
+
 (defn register-all [builtin-metrics  storm-conf topology-context]
   (doseq [[kw imetric] builtin-metrics]
-    (.registerMetric topology-context (str "__" (name kw)) imetric
-                     (int (get storm-conf Config/TOPOLOGY_BUILTIN_METRICS_BUCKET_SIZE_SECS)))))
+    (if (and (not= "execute-count" (name kw)) (not= "execute-latency" (name kw))) ;; exclude execute-count and execute-latency
+      (.registerMetric topology-context (str "__" (name kw)) imetric
+                     (int (get storm-conf Config/TOPOLOGY_BUILTIN_METRICS_BUCKET_SIZE_SECS))))
+    ))
 
 (defn register-iconnection-server-metric [server storm-conf topology-context]
   (if (instance? IStatefulObject server)

@@ -32,5 +32,6 @@ public class Constants {
     public static final String METRICS_STREAM_ID = "__metrics";
     public static final String METRICS_TICK_STREAM_ID = "__metrics_tick";
     public static final String CREDENTIALS_CHANGED_STREAM_ID = "__credentials";
+    public static final String I_SHUFFLE_GROUPING_INFO_STREAM_ID = "__i_shuffle_grouping_info";
 }
     
